@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::BufRead;
 
 pub const DEFAULT_PATCHES_DIR: &str = "patches";
 pub const DEFAULT_SERIES_FILE: &str = "series";
@@ -85,8 +86,10 @@ impl Series {
         Self { entries: vec![] }
     }
 
-    pub fn read<R: std::io::BufRead>(reader: R) -> std::io::Result<Self> {
+    pub fn read<R: std::io::Read>(reader: R) -> std::io::Result<Self> {
         let mut series = Self::new();
+
+        let reader = std::io::BufReader::new(reader);
 
         for line in reader.lines() {
             let line = line?;
