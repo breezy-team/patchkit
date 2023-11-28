@@ -5,5 +5,6 @@ edition = "2021"
 license = "Apache-2.0"
 description = "A library for parsing and manipulating patch files"
 repository = "https://github.com/breezy-team/patchkit"
+authors = ["Jelmer Vernooĳ <jelmer@jelmer.uk>"]
 
 [dependencies]
