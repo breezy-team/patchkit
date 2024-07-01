@@ -1,5 +1,3 @@
-use lazy_static::lazy_static;
-use regex::bytes::Regex;
 use crate::patch::{Hunk, HunkLine, Patch, UnifiedPatch, BinaryPatch};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -124,14 +122,11 @@ fn test_iter_lines_handle_nl() {
     assert_eq!(iter.next(), None);
 }
 
+static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> = lazy_regex::bytes_lazy_regex!(r"^Binary files (.+) and (.+) differ");
+
 fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
     iter_lines: &mut T,
 ) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
-    lazy_static! {
-        static ref BINARY_FILES_RE: Regex =
-            Regex::new(r"^Binary files (.+) and (.+) differ").unwrap();
-    }
-
     let line = iter_lines
         .next()
         .ok_or_else(|| Error::PatchSyntax("No input", vec![]))?;
