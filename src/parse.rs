@@ -1,3 +1,30 @@
+use lazy_static::lazy_static;
+use regex::bytes::Regex;
+use std::num::ParseIntError;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    BinaryFiles(Vec<u8>, Vec<u8>),
+    PatchSyntax(&'static str, Vec<u8>),
+    MalformedPatchHeader(&'static str, Vec<u8>),
+    MalformedHunkHeader(&'static str, Vec<u8>),
+    MalformedLine(&'static str, Vec<u8>),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::BinaryFiles(oldname, newname) => write!(f, "Binary files {:?} and {:?} differ", oldname, newname),
+            Self::PatchSyntax(msg, line) => write!(f, "Patch syntax error: {} in {:?}", msg, line),
+            Self::MalformedPatchHeader(msg, line) => write!(f, "Malformed patch header: {} in {:?}", msg, line),
+            Self::MalformedHunkHeader(msg, line) => write!(f, "Malformed hunk header: {} in {:?}", msg, line),
+            Self::MalformedLine(msg, line) => write!(f, "Malformed line: {} in {:?}", msg, line),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 /// Split lines but preserve trailing newlines
 pub fn splitlines<'a>(data: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
     let mut start = 0;
@@ -97,4 +124,79 @@ fn test_iter_lines_handle_nl() {
     assert_eq!(iter.next(), Some("line 3\n".as_bytes()));
     assert_eq!(iter.next(), Some("line 4".as_bytes()));
     assert_eq!(iter.next(), None);
+}
+
+fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
+    iter_lines: &mut T,
+) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
+    lazy_static! {
+        static ref BINARY_FILES_RE: Regex =
+            Regex::new(r"^Binary files (.+) and (.+) differ").unwrap();
+    }
+
+    let line = iter_lines
+        .next()
+        .ok_or_else(|| Error::PatchSyntax("No input", vec![]))?;
+
+    if let Some(captures) = BINARY_FILES_RE.captures(&line) {
+        let orig_name = captures.get(1).unwrap().as_bytes().to_vec();
+        let mod_name = captures.get(2).unwrap().as_bytes().to_vec();
+        return Err(Error::BinaryFiles(orig_name, mod_name));
+    }
+    let orig_name = line
+        .strip_prefix(b"--- ")
+        .ok_or_else(|| Error::MalformedPatchHeader("No orig name", line.to_vec()))?
+        .strip_suffix(b"\n")
+        .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec()))?;
+    let (orig_name, orig_ts) = match orig_name.split(|&c| c == b'\t').collect::<Vec<_>>()[..]
+    {
+        [name, ts] => (name.to_vec(), Some(ts.to_vec())),
+        [name] => (name.to_vec(), None),
+        _ => return Err(Error::MalformedPatchHeader("No orig line", line.to_vec())),
+    };
+
+    let line = iter_lines
+        .next()
+        .ok_or_else(|| Error::PatchSyntax("No input", vec![]))?;
+
+    let (mod_name, mod_ts) = match line.strip_prefix(b"+++ ") {
+        Some(line) => {
+            let mod_name = line
+                .strip_suffix(b"\n")
+                .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec()))?;
+            let (mod_name, mod_ts) = match mod_name.split(|&c| c == b'\t').collect::<Vec<_>>()[..] {
+                [name, ts] => (name.to_vec(), Some(ts.to_vec())),
+                [name] => (name.to_vec(), None),
+                _ => return Err(Error::PatchSyntax("Invalid mod name", line.to_vec())),
+            };
+            (mod_name, mod_ts)
+        }
+        None => return Err(Error::MalformedPatchHeader("No mod line", line.to_vec())),
+    };
+
+    Ok(((orig_name, orig_ts), (mod_name, mod_ts)))
+}
+
+#[cfg(test)]
+mod get_patch_names_tests {
+    #[test]
+    fn test_simple() {
+        let lines = [
+            &b"--- baz	2009-10-14 19:49:59 +0000\n"[..],
+            &b"+++ quxx	2009-10-14 19:51:00 +0000\n"[..]];
+        let mut iter = lines.into_iter();
+        let (old, new) = super::get_patch_names(&mut iter).unwrap();
+        assert_eq!(old, (b"baz".to_vec(), Some(b"2009-10-14 19:49:59 +0000".to_vec())));
+        assert_eq!(new, (b"quxx".to_vec(), Some(b"2009-10-14 19:51:00 +0000".to_vec())));
+    }
+
+    #[test]
+    fn test_binary() {
+        let lines = [
+            &b"Binary files qoo and bar differ\n"[..]
+        ];
+        let mut iter = lines.into_iter();
+        let e = super::get_patch_names(&mut iter).unwrap_err();
+        assert_eq!(e, super::Error::BinaryFiles(b"qoo".to_vec(), b"bar".to_vec()));
+    }
 }
