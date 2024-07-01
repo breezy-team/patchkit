@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use regex::bytes::Regex;
-use crate::patch::{Hunk, HunkLine};
+use crate::patch::{Hunk, HunkLine, Patch, UnifiedPatch, BinaryPatch};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -290,3 +290,248 @@ mod iter_hunks_tests {
         assert_eq!(&expected_hunk, hunks.iter().next().unwrap());
     }
 }
+
+pub fn parse_patch<'a, I>(iter_lines: I, allow_dirty: bool) -> Result<Box<dyn Patch>, Error>
+where
+    I: Iterator<Item = &'a [u8]> + 'a,
+{
+    let mut iter_lines = iter_lines_handle_nl(iter_lines);
+
+    let ((orig_name, orig_ts), (mod_name, mod_ts)) = match get_patch_names(&mut iter_lines) {
+        Ok(names) => names,
+        Err(Error::BinaryFiles(orig_name, mod_name)) => {
+            return Ok(Box::new(BinaryPatch(orig_name, mod_name)));
+        }
+        Err(e) => return Err(e),
+    };
+
+    let mut patch = UnifiedPatch::new(orig_name, orig_ts, mod_name, mod_ts);
+    for hunk in iter_hunks(&mut iter_lines, allow_dirty) {
+        patch.hunks.push(hunk?);
+    }
+    Ok(Box::new(patch))
+}
+
+
+#[cfg(test)]
+mod patches_tests {
+    macro_rules! test_patch {
+        ($name:ident, $orig:expr, $mod:expr, $patch:expr) => {
+            #[test]
+            fn $name() {
+                let orig = include_bytes!(concat!("../test_patches_data/", $orig));
+                let modi = include_bytes!(concat!("../test_patches_data/", $mod));
+                let patch = include_bytes!(concat!("../test_patches_data/", $patch));
+                let parsed = super::parse_patch(super::splitlines(patch), false).unwrap();
+                let mut patched = Vec::new();
+                let mut iter = parsed.apply_exact(orig).unwrap().into_iter();
+                while let Some(line) = iter.next() {
+                    patched.push(line);
+                }
+                assert_eq!(patched, modi);
+            }
+        };
+    }
+
+    test_patch!(test_patch_2, "orig-2", "mod-2", "diff-2");
+    test_patch!(test_patch_3, "orig-3", "mod-3", "diff-3");
+    test_patch!(test_patch_4, "orig-4", "mod-4", "diff-4");
+    test_patch!(test_patch_5, "orig-5", "mod-5", "diff-5");
+    test_patch!(test_patch_6, "orig-6", "mod-6", "diff-6");
+    test_patch!(test_patch_7, "orig-7", "mod-7", "diff-7");
+}
+
+#[derive(Debug)]
+pub struct PatchConflict {
+    line_no: usize,
+    orig_line: Vec<u8>,
+    patch_line: Vec<u8>,
+}
+
+impl std::fmt::Display for PatchConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Patch conflict at orig line {}: orig: {:?}, patch: {:?}",
+            self.line_no,
+            String::from_utf8_lossy(&self.orig_line),
+            String::from_utf8_lossy(&self.patch_line)
+        )
+    }
+}
+
+impl std::error::Error for PatchConflict {}
+
+struct PatchedIter<H: Iterator<Item = Hunk>, L: Iterator<Item = Vec<u8>>> {
+    orig_lines: L,
+    hunk_lines: Vec<HunkLine>,
+    hunks: std::iter::Peekable<H>,
+    line_no: usize,
+}
+
+impl<H: Iterator<Item = Hunk>, L: Iterator<Item = Vec<u8>>> Iterator for PatchedIter<H, L> {
+    type Item = Result<Vec<u8>, PatchConflict>;
+
+    fn next(&mut self) -> Option<Result<Vec<u8>, PatchConflict>> {
+        loop {
+            // First, check if we just need to yield the next line from the original file.
+            match self.hunks.peek_mut() {
+                // We're ahead of the next hunk. Yield the next line from the original file.
+                Some(hunk) if self.line_no < hunk.orig_pos => {
+                    self.line_no += 1;
+                    if let Some(line) = self.orig_lines.next() {
+                        return Some(Ok(line));
+                    } else {
+                        return Some(Err(PatchConflict {
+                            line_no: self.line_no,
+                            orig_line: Vec::new(),
+                            patch_line: Vec::new(),
+                        }));
+                    }
+                }
+                // There are no more hunks. Yield the rest of the original file.
+                None => {
+                    if let Some(line) = self.orig_lines.next() {
+                        return Some(Ok(line));
+                    } else {
+                        return None;
+                    }
+                }
+                Some(_hunk) => {
+                    // We're in a hunk. Check if we need to yield a line from the hunk.
+                    if let Some(line) = self.hunk_lines.pop() {
+                        match line {
+                            HunkLine::ContextLine(bytes) => {
+                                if let Some(orig_line) = self.orig_lines.next() {
+                                    if orig_line != bytes {
+                                        return Some(Err(PatchConflict {
+                                            line_no: self.line_no,
+                                            orig_line,
+                                            patch_line: bytes,
+                                        }));
+                                    }
+                                } else {
+                                    return Some(Err(PatchConflict {
+                                        line_no: self.line_no,
+                                        orig_line: Vec::new(),
+                                        patch_line: bytes,
+                                    }));
+                                }
+                                self.line_no += 1;
+                                return Some(Ok(bytes));
+                            }
+                            HunkLine::InsertLine(bytes) => {
+                                return Some(Ok(bytes));
+                            }
+                            HunkLine::RemoveLine(bytes) => {
+                                if let Some(orig_line) = self.orig_lines.next() {
+                                    if orig_line != bytes {
+                                        return Some(Err(PatchConflict {
+                                            line_no: self.line_no,
+                                            orig_line,
+                                            patch_line: bytes,
+                                        }));
+                                    }
+                                } else {
+                                    return Some(Err(PatchConflict {
+                                        line_no: self.line_no,
+                                        orig_line: Vec::new(),
+                                        patch_line: bytes,
+                                    }));
+                                }
+                                self.line_no += 1;
+                            }
+                        }
+                    } else {
+                        self.hunks.next();
+                        if let Some(h) = self.hunks.peek_mut() {
+                            let mut hunk_lines = h.lines.drain(..).collect::<Vec<_>>();
+                            hunk_lines.reverse();
+                            self.hunk_lines = hunk_lines;
+                        }
+
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod iter_exact_patched_from_hunks_tests {
+    #[test]
+    fn test_just_context() {
+        let orig_lines = vec![
+            b"line 1\n".to_vec(),
+            b"line 2\n".to_vec(),
+            b"line 3\n".to_vec(),
+            b"line 4\n".to_vec(),
+        ];
+        let mut hunk = crate::patch::Hunk::new(1, 1, 1, 1, None);
+        hunk.lines.push(crate::patch::HunkLine::ContextLine(b"line 1\n".to_vec()));
+        let hunks = vec![hunk];
+        let result = super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter()).collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(&result, &[
+            b"line 1\n".to_vec(),
+            b"line 2\n".to_vec(),
+            b"line 3\n".to_vec(),
+            b"line 4\n".to_vec(),
+        ]);
+    }
+
+    #[test]
+    fn test_insert() {
+        let orig_lines = vec![
+            b"line 1\n".to_vec(),
+            b"line 2\n".to_vec(),
+            b"line 3\n".to_vec(),
+            b"line 4\n".to_vec(),
+        ];
+        let mut hunk = crate::patch::Hunk::new(1, 0, 1, 1, None);
+        hunk.lines.push(crate::patch::HunkLine::InsertLine(b"line 0\n".to_vec()));
+        hunk.lines.push(crate::patch::HunkLine::ContextLine(b"line 1\n".to_vec()));
+        let hunks = vec![hunk];
+        let result = super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter()).collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(&result, &[
+            b"line 0\n".to_vec(),
+            b"line 1\n".to_vec(),
+            b"line 2\n".to_vec(),
+            b"line 3\n".to_vec(),
+            b"line 4\n".to_vec(),
+        ]);
+    }
+}
+
+/// Iterate through a series of lines with a patch applied.
+///
+/// This handles a single file, and does exact, not fuzzy patching.
+///
+/// Args:
+///   orig_lines: The original lines of the file.
+///   hunks: The hunks to apply to the file.
+pub fn iter_exact_patched_from_hunks<'a>(
+    orig_lines: impl Iterator<Item = Vec<u8>> + 'a,
+    hunks: impl Iterator<Item = Hunk>,
+) -> impl Iterator<Item = Result<Vec<u8>, PatchConflict>> {
+    let mut hunks = hunks.peekable();
+    let mut hunk_lines = if let Some(h) = hunks.peek_mut() {
+        h.lines.drain(..).collect()
+    } else {
+        Vec::new()
+    };
+    hunk_lines.reverse();
+    PatchedIter {
+        orig_lines,
+        hunks,
+        line_no: 1,
+        hunk_lines,
+    }
+}
+
+/// Find the index of the first character that differs between two texts
+pub fn difference_index(atext: &[u8], btext: &[u8]) -> Option<usize> {
+    let length = atext.len().min(btext.len());
+    (0..length).find(|&i| atext[i] != btext[i])
+}
+
+

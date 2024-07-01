@@ -1,6 +1,24 @@
 use std::num::ParseIntError;
 use regex::bytes::Regex;
 
+#[derive(Debug)]
+pub enum ApplyError {
+    Conflict(String),
+
+    Unapplyable,
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Conflict(reason) => write!(f, "Conflict: {}", reason),
+            Self::Unapplyable => write!(f, "Patch unapplyable"),
+        }
+    }
+}
+
+impl std::error::Error for ApplyError {}
+
 /// A patch of some sort
 pub trait Patch {
     /// Old file name
@@ -8,6 +26,8 @@ pub trait Patch {
 
     /// New file name
     fn newname(&self) -> &[u8];
+
+    fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, ApplyError>;
 }
 
 /// A binary patch
@@ -20,6 +40,10 @@ impl Patch for BinaryPatch {
 
     fn newname(&self) -> &[u8] {
         &self.1
+    }
+
+    fn apply_exact(&self, _orig: &[u8]) -> Result<Vec<u8>, ApplyError> {
+        Err(ApplyError::Unapplyable)
     }
 }
 
@@ -65,6 +89,15 @@ impl Patch for UnifiedPatch {
 
     fn newname(&self) -> &[u8] {
         &self.mod_name
+    }
+
+    fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, ApplyError> {
+        let orig_lines = crate::parse::splitlines(orig).map(|l| l.to_vec());
+        let lines = crate::parse::iter_exact_patched_from_hunks(
+            orig_lines,
+            self.hunks.clone().into_iter()).collect::<Result<Vec<Vec<u8>>, crate::parse::PatchConflict>>()
+            .map_err(|e| ApplyError::Conflict(e.to_string()))?;
+        Ok(lines.concat())
     }
 }
 
@@ -215,6 +248,77 @@ impl Hunk {
         let tail = captures.get(3).map(|m| m.as_bytes().to_vec());
         Ok(Self::new(orig_pos, orig_range, mod_pos, mod_range, tail))
     }
+
+    pub fn lines(&self) -> &[HunkLine] {
+        &self.lines
+    }
+
+    pub fn get_header(&self) -> Vec<u8> {
+        let tail_str = match &self.tail {
+            Some(tail) => [b" ".to_vec(), tail.to_vec()].concat(),
+            None => Vec::new(),
+        };
+        format!(
+            "@@ -{} +{} @@{}\n",
+            self.range_str(self.orig_pos, self.orig_range),
+            self.range_str(self.mod_pos, self.mod_range),
+            String::from_utf8_lossy(&tail_str),
+        )
+        .into_bytes()
+    }
+
+    fn range_str(&self, pos: usize, range: usize) -> String {
+        if range == 1 {
+            format!("{}", pos)
+        } else {
+            format!("{},{}", pos, range)
+        }
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut lines = vec![self.get_header()];
+        for line in &self.lines {
+            lines.push(match line {
+                HunkLine::ContextLine(bytes) => bytes.clone(),
+                HunkLine::InsertLine(bytes) => bytes.clone(),
+                HunkLine::RemoveLine(bytes) => bytes.clone(),
+            });
+        }
+        lines.concat()
+    }
+
+    pub fn shift_to_mod(&self, pos: usize) -> Option<isize> {
+        if pos < self.orig_pos - 1 {
+            Some(0)
+        } else if pos > self.orig_pos + self.orig_range {
+            Some((self.mod_range as isize) - (self.orig_range as isize))
+        } else {
+            self.shift_to_mod_lines(pos)
+        }
+    }
+
+    fn shift_to_mod_lines(&self, pos: usize) -> Option<isize> {
+        let mut position = self.orig_pos - 1;
+        let mut shift = 0;
+        for line in &self.lines {
+            match line {
+                HunkLine::InsertLine(_) => shift += 1,
+                HunkLine::RemoveLine(_) => {
+                    if position == pos {
+                        return None;
+                    }
+                    shift -= 1;
+                    position += 1;
+                }
+                HunkLine::ContextLine(_) => position += 1,
+            }
+            if position > pos {
+                break;
+            }
+        }
+        Some(shift)
+    }
+
 }
 
 #[cfg(test)]
