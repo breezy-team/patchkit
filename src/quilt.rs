@@ -86,6 +86,21 @@ impl Series {
         Self { entries: vec![] }
     }
 
+    pub fn len(&self) -> usize {
+        self.entries.iter().filter(|entry| matches!(entry, SeriesEntry::Patch { .. })).count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.entries.iter().any(|entry| match entry {
+            SeriesEntry::Patch { name: entry_name, .. } => entry_name == name,
+            _ => false,
+        })
+    }
+
     pub fn read<R: std::io::Read>(reader: R) -> std::io::Result<Self> {
         let mut series = Self::new();
 
@@ -115,6 +130,7 @@ impl Series {
         Ok(series)
     }
 
+    /// Remove a patch from the series file
     pub fn remove(&mut self, name: &str) {
         self.entries.retain(|entry| match entry {
             SeriesEntry::Patch { name: entry_name, .. } => entry_name != name,
@@ -129,6 +145,7 @@ impl Series {
         })
     }
 
+    /// Append a patch to the series file
     pub fn append(&mut self, name: &str, options: Option<&[String]>) {
         self.entries.push(SeriesEntry::Patch {
             name: name.to_string(),
