@@ -145,7 +145,7 @@ mod hunkline_tests {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MalformedHunkHeader(&'static str, Vec<u8>);
+pub struct MalformedHunkHeader(pub &'static str, pub Vec<u8>);
 
 impl std::fmt::Display for MalformedHunkHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -157,12 +157,12 @@ impl std::error::Error for MalformedHunkHeader {}
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Hunk {
-    orig_pos: usize,
-    orig_range: usize,
-    mod_pos: usize,
-    mod_range: usize,
-    tail: Option<Vec<u8>>,
-    lines: Vec<HunkLine>,
+    pub orig_pos: usize,
+    pub orig_range: usize,
+    pub mod_pos: usize,
+    pub mod_range: usize,
+    pub tail: Option<Vec<u8>>,
+    pub lines: Vec<HunkLine>,
 }
 
 impl Hunk {

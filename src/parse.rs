@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use regex::bytes::Regex;
-use std::num::ParseIntError;
+use crate::patch::{Hunk, HunkLine};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -24,7 +24,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Split lines but preserve trailing newlines
-pub fn splitlines<'a>(data: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
+pub fn splitlines(data: &[u8]) -> impl Iterator<Item = &'_ [u8]> {
     let mut start = 0;
     let mut end = 0;
     std::iter::from_fn(move || {
@@ -136,7 +136,7 @@ fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
         .next()
         .ok_or_else(|| Error::PatchSyntax("No input", vec![]))?;
 
-    if let Some(captures) = BINARY_FILES_RE.captures(&line) {
+    if let Some(captures) = BINARY_FILES_RE.captures(line) {
         let orig_name = captures.get(1).unwrap().as_bytes().to_vec();
         let mod_name = captures.get(2).unwrap().as_bytes().to_vec();
         return Err(Error::BinaryFiles(orig_name, mod_name));
@@ -196,5 +196,97 @@ mod get_patch_names_tests {
         let mut iter = lines.into_iter();
         let e = super::get_patch_names(&mut iter).unwrap_err();
         assert_eq!(e, super::Error::BinaryFiles(b"qoo".to_vec(), b"bar".to_vec()));
+    }
+}
+
+pub fn iter_hunks<'a, I>(
+    iter_lines: &mut I,
+    allow_dirty: bool,
+) -> impl Iterator<Item = Result<Hunk, Error>> + '_
+where
+    I: Iterator<Item = &'a [u8]>
+{
+    std::iter::from_fn(move || {
+        while let Some(line) = iter_lines.next() {
+            if line == b"\n" {
+                continue;
+            }
+            match Hunk::from_header(line) {
+                Ok(mut new_hunk) => {
+                    let mut orig_size = 0;
+                    let mut mod_size = 0;
+                    while orig_size < new_hunk.orig_range || mod_size < new_hunk.mod_range {
+                        let line = iter_lines.next()?;
+                        match HunkLine::parse_line(line) {
+                            Err(_) => {
+                                return Some(Err(Error::PatchSyntax("Invalid hunk line", line.to_vec())));
+                            }
+                            Ok(hunk_line) => {
+                                if matches!(
+                                    hunk_line,
+                                    HunkLine::RemoveLine(_) | HunkLine::ContextLine(_)
+                                ) {
+                                    orig_size += 1
+                                }
+                                if matches!(
+                                    hunk_line,
+                                    HunkLine::InsertLine(_) | HunkLine::ContextLine(_)
+                                ) {
+                                    mod_size += 1
+                                }
+                                new_hunk.lines.push(hunk_line);
+                            }
+                        }
+                    }
+                    return Some(Ok(new_hunk));
+                }
+                Err(crate::patch::MalformedHunkHeader(m, l)) => {
+                    if allow_dirty {
+                        // If the line isn't a hunk header, then we've reached the end of this
+                        // patch and there's "junk" at the end. Ignore the rest of the patch.
+                        return None;
+                    } else {
+                        return Some(Err(Error::MalformedHunkHeader(m, l)));
+                    }
+                }
+            }
+        }
+        None
+    }
+    )
+}
+
+#[cfg(test)]
+mod iter_hunks_tests {
+    use super::{Hunk, HunkLine};
+    #[test]
+    fn test_iter_hunks() {
+        let mut lines = super::splitlines(br#"@@ -391,6 +391,8 @@
+                 else:
+                     assert isinstance(hunk_line, RemoveLine)
+                 line_no += 1
++    for line in orig_lines:
++        yield line
+                     
+ import unittest
+ import os.path
+
+"#);
+
+        let hunks = super::iter_hunks(&mut lines, false).collect::<Result<Vec<Hunk>, crate::parse::Error>>().unwrap();
+
+        let mut expected_hunk = Hunk::new(391, 6, 391, 8, None);
+        expected_hunk.lines.extend([
+            HunkLine::ContextLine(b"                else:\n".to_vec()),
+            HunkLine::ContextLine(b"                    assert isinstance(hunk_line, RemoveLine)\n".to_vec()),
+            HunkLine::ContextLine(b"                line_no += 1\n".to_vec()),
+            HunkLine::InsertLine(b"    for line in orig_lines:\n".to_vec()),
+            HunkLine::InsertLine(b"        yield line\n".to_vec()),
+            HunkLine::ContextLine(b"                    \n".to_vec()),
+            HunkLine::ContextLine(b"import unittest\n".to_vec()),
+            HunkLine::ContextLine(b"import os.path\n".to_vec())
+        ]);
+
+        assert_eq!(&expected_hunk, hunks.iter().next().unwrap());
     }
 }
