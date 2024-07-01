@@ -65,7 +65,7 @@ impl Patch for UnifiedPatch {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HunkLine {
     ContextLine(Vec<u8>),
     InsertLine(Vec<u8>),
@@ -75,9 +75,9 @@ pub enum HunkLine {
 impl HunkLine {
     pub fn get_str(&self, leadchar: u8) -> Vec<u8> {
         match self {
-            HunkLine::ContextLine(contents)
-            | HunkLine::InsertLine(contents)
-            | HunkLine::RemoveLine(contents) => {
+            Self::ContextLine(contents)
+            | Self::InsertLine(contents)
+            | Self::RemoveLine(contents) => {
                 let terminator = if !contents.ends_with(&b"\n"[..]) {
                     [b"\n".to_vec(), crate::parse::NO_NL.to_vec()].concat()
                 } else {
@@ -90,18 +90,56 @@ impl HunkLine {
 
     pub fn char(&self) -> u8 {
         match self {
-            HunkLine::ContextLine(_) => b' ',
-            HunkLine::InsertLine(_) => b'+',
-            HunkLine::RemoveLine(_) => b'-',
+            Self::ContextLine(_) => b' ',
+            Self::InsertLine(_) => b'+',
+            Self::RemoveLine(_) => b'-',
         }
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
         self.get_str(self.char())
     }
+
+    pub fn parse_line(line: &[u8]) -> Result<Self, MalformedLine> {
+        if line.starts_with(b"\n") {
+            Ok(Self::ContextLine(line.to_vec()))
+        } else if line.starts_with(b" ") {
+            Ok(Self::ContextLine(line[1..].to_vec()))
+        } else if line.starts_with(b"+") {
+            Ok(Self::InsertLine(line[1..].to_vec()))
+        } else if line.starts_with(b"-") {
+            Ok(Self::RemoveLine(line[1..].to_vec()))
+        } else {
+            Err(MalformedLine(line.to_vec()))
+        }
+    }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MalformedLine(Vec<u8>);
 
+impl std::fmt::Display for MalformedLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Malformed line: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for MalformedLine {}
+
+#[cfg(test)]
+mod hunkline_tests {
+    use super::HunkLine;
+    use super::MalformedLine;
+
+    #[test]
+    fn test_parse_line() {
+        assert_eq!(HunkLine::parse_line(&b" foo\n"[..]).unwrap(), HunkLine::ContextLine(b"foo\n".to_vec()));
+        assert_eq!(HunkLine::parse_line(&b"-foo\n"[..]).unwrap(), HunkLine::RemoveLine(b"foo\n".to_vec()));
+        assert_eq!(HunkLine::parse_line(&b"+foo\n"[..]).unwrap(), HunkLine::InsertLine(b"foo\n".to_vec()));
+        assert_eq!(HunkLine::parse_line(&b"\n"[..]).unwrap(), HunkLine::ContextLine(b"\n".to_vec()));
+        assert_eq!(HunkLine::parse_line(&b"aaaaa\n"[..]).unwrap_err(), MalformedLine(b"aaaaa\n".to_vec()));
+    }
+}
 
 pub struct Hunk {
     orig_pos: usize,

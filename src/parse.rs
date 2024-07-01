@@ -8,7 +8,6 @@ pub enum Error {
     PatchSyntax(&'static str, Vec<u8>),
     MalformedPatchHeader(&'static str, Vec<u8>),
     MalformedHunkHeader(&'static str, Vec<u8>),
-    MalformedLine(&'static str, Vec<u8>),
 }
 
 impl std::fmt::Display for Error {
@@ -18,7 +17,6 @@ impl std::fmt::Display for Error {
             Self::PatchSyntax(msg, line) => write!(f, "Patch syntax error: {} in {:?}", msg, line),
             Self::MalformedPatchHeader(msg, line) => write!(f, "Malformed patch header: {} in {:?}", msg, line),
             Self::MalformedHunkHeader(msg, line) => write!(f, "Malformed hunk header: {} in {:?}", msg, line),
-            Self::MalformedLine(msg, line) => write!(f, "Malformed line: {} in {:?}", msg, line),
         }
     }
 }
