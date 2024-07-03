@@ -124,7 +124,7 @@ fn test_iter_lines_handle_nl() {
 
 static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> = lazy_regex::bytes_lazy_regex!(r"^Binary files (.+) and (.+) differ");
 
-fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
+pub(crate) fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
     iter_lines: &mut T,
 ) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
     let line = iter_lines
@@ -196,7 +196,6 @@ mod get_patch_names_tests {
 
 pub fn iter_hunks<'a, I>(
     iter_lines: &mut I,
-    allow_dirty: bool,
 ) -> impl Iterator<Item = Result<Hunk, Error>> + '_
 where
     I: Iterator<Item = &'a [u8]>
@@ -236,13 +235,7 @@ where
                     return Some(Ok(new_hunk));
                 }
                 Err(crate::patch::MalformedHunkHeader(m, l)) => {
-                    if allow_dirty {
-                        // If the line isn't a hunk header, then we've reached the end of this
-                        // patch and there's "junk" at the end. Ignore the rest of the patch.
-                        return None;
-                    } else {
-                        return Some(Err(Error::MalformedHunkHeader(m.to_string(), l)));
-                    }
+                    return Some(Err(Error::MalformedHunkHeader(m.to_string(), l)));
                 }
             }
         }
@@ -268,7 +261,7 @@ mod iter_hunks_tests {
 
 "#);
 
-        let hunks = super::iter_hunks(&mut lines, false).collect::<Result<Vec<Hunk>, crate::parse::Error>>().unwrap();
+        let hunks = super::iter_hunks(&mut lines).collect::<Result<Vec<Hunk>, crate::parse::Error>>().unwrap();
 
         let mut expected_hunk = Hunk::new(391, 6, 391, 8, None);
         expected_hunk.lines.extend([
@@ -286,7 +279,7 @@ mod iter_hunks_tests {
     }
 }
 
-pub fn parse_patch<'a, I>(iter_lines: I, allow_dirty: bool) -> Result<Box<dyn Patch>, Error>
+pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Box<dyn Patch>, Error>
 where
     I: Iterator<Item = &'a [u8]> + 'a,
 {
@@ -301,12 +294,11 @@ where
     };
 
     let mut patch = UnifiedPatch::new(orig_name, orig_ts, mod_name, mod_ts);
-    for hunk in iter_hunks(&mut iter_lines, allow_dirty) {
+    for hunk in iter_hunks(&mut iter_lines) {
         patch.hunks.push(hunk?);
     }
     Ok(Box::new(patch))
 }
-
 
 #[cfg(test)]
 mod patches_tests {
@@ -317,7 +309,7 @@ mod patches_tests {
                 let orig = include_bytes!(concat!("../test_patches_data/", $orig));
                 let modi = include_bytes!(concat!("../test_patches_data/", $mod));
                 let patch = include_bytes!(concat!("../test_patches_data/", $patch));
-                let parsed = super::parse_patch(super::splitlines(patch), false).unwrap();
+                let parsed = super::parse_patch(super::splitlines(patch)).unwrap();
                 let mut patched = Vec::new();
                 let mut iter = parsed.apply_exact(orig).unwrap().into_iter();
                 while let Some(line) = iter.next() {
@@ -669,12 +661,6 @@ pub fn iter_file_patch<I>(
 where
     I: Iterator<Item = Vec<u8>>,
 {
-    // FIXME: Docstring is not quite true.  We allow certain comments no
-    // matter what, If they startwith '===', '***', or '#' Someone should
-    // reexamine this logic and decide if we should include those in
-    // allow_dirty or restrict those to only being before the patch is found
-    // (as allow_dirty does).
-
     FileEntryIter {
         iter: orig,
         orig_range: 0,
@@ -744,13 +730,17 @@ mod iter_file_patch_tests {
 
 }
 
+/// Parse a patch file
+///
+/// # Arguments
+/// * `iter`: Iterator over lines
 pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn Patch>>, Error>
 where
     I: Iterator<Item = Vec<u8>>
 {
     iter_file_patch(iter)
         .filter_map(|entry| match entry {
-            Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice()), true) {
+            Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice())) {
                 Ok(patch) => Some(Ok(patch)),
                 Err(e) => Some(Err(e)),
             },

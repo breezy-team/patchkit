@@ -82,6 +82,45 @@ impl UnifiedPatch {
             hunks: Vec::new(),
         }
     }
+
+    pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Self, crate::parse::Error>
+    where
+        I: Iterator<Item = &'a [u8]> + 'a,
+    {
+        let mut iter_lines = crate::parse::iter_lines_handle_nl(iter_lines);
+
+        let ((orig_name, orig_ts), (mod_name, mod_ts)) = match crate::parse::get_patch_names(&mut iter_lines) {
+            Ok(names) => names,
+            Err(e) => return Err(e),
+        };
+
+        let mut patch = Self::new(orig_name, orig_ts, mod_name, mod_ts);
+        for hunk in crate::parse::iter_hunks(&mut iter_lines) {
+            patch.hunks.push(hunk?);
+        }
+        Ok(patch)
+    }
+
+    /// Parse a unified patch file
+    ///
+    /// # Arguments
+    /// * `iter`: Iterator over lines
+    pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<UnifiedPatch>, crate::parse::Error>
+    where
+        I: Iterator<Item = Vec<u8>>
+    {
+        crate::parse::iter_file_patch(iter)
+            .filter_map(|entry| match entry {
+                Ok(crate::parse::FileEntry::Patch(lines)) => match Self::parse_patch(lines.iter().map(|l| l.as_slice())) {
+                    Ok(patch) => Some(Ok(patch)),
+                    Err(e) => Some(Err(e)),
+                },
+                Ok(crate::parse::FileEntry::Junk(_)) => None,
+                Ok(crate::parse::FileEntry::Meta(_)) => None,
+                Err(e) => Some(Err(e)),
+            })
+            .collect()
+    }
 }
 
 impl Patch for UnifiedPatch {
