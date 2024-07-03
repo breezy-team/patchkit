@@ -377,6 +377,55 @@ mod hunk_tests {
         let hunk = Hunk::from_header(&b"@@ -1 +2 @@ function()\n"[..]).unwrap();
         assert_eq!(hunk, Hunk::new(1, 1, 2, 1, Some(b"function()".to_vec())));
     }
+
+    #[test]
+    fn test_valid_hunk_header() {
+        let header = b"@@ -34,11 +50,6 @@\n";
+        let hunk = Hunk::from_header(&header[..]).unwrap();
+        assert_eq!(hunk.orig_pos, 34);
+        assert_eq!(hunk.orig_range, 11);
+        assert_eq!(hunk.mod_pos, 50);
+        assert_eq!(hunk.mod_range, 6);
+        assert_eq!(hunk.as_bytes(), &header[..]);
+    }
+
+    #[test]
+    fn test_valid_hunk_header2() {
+        let header = b"@@ -1 +0,0 @@\n";
+        let hunk = Hunk::from_header(&header[..]).unwrap();
+        assert_eq!(hunk.orig_pos, 1);
+        assert_eq!(hunk.orig_range, 1);
+        assert_eq!(hunk.mod_pos, 0);
+        assert_eq!(hunk.mod_range, 0);
+        assert_eq!(hunk.as_bytes(), header);
+    }
+
+    /// Parse a hunk header produced by diff -p.
+    #[test]
+    fn test_pdiff() {
+        let header = b"@@ -407,7 +292,7 @@ bzr 0.18rc1  2007-07-10\n";
+        let hunk = Hunk::from_header(header).unwrap();
+        assert_eq!(&b"bzr 0.18rc1  2007-07-10"[..], hunk.tail.as_ref().unwrap());
+        assert_eq!(&header[..], hunk.as_bytes());
+    }
+
+    fn assert_malformed_header(header: &[u8]) {
+        let err = Hunk::from_header(header).unwrap_err();
+        assert!(matches!(err, super::MalformedHunkHeader(..)));
+    }
+
+    #[test]
+    fn test_invalid_header() {
+        assert_malformed_header(&b" -34,11 +50,6 \n"[..]);
+        assert_malformed_header(&b"@@ +50,6 -34,11 @@\n"[..]);
+        assert_malformed_header(&b"@@ -34,11 +50,6 @@"[..]);
+        assert_malformed_header(&b"@@ -34.5,11 +50,6 @@\n"[..]);
+        assert_malformed_header(&b"@@-34,11 +50,6@@\n"[..]);
+        assert_malformed_header(&b"@@ 34,11 50,6 @@\n"[..]);
+        assert_malformed_header(&b"@@ -34,11 @@\n"[..]);
+        assert_malformed_header(&b"@@ -34,11 +50,6.5 @@\n"[..]);
+        assert_malformed_header(&b"@@ -34,11 +50,-6 @@\n"[..]);
+    }
 }
 
 /// Parse a patch range, handling the "1" special-case
