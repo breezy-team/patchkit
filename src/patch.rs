@@ -31,6 +31,7 @@ pub trait Patch {
 }
 
 /// A binary patch
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryPatch(pub Vec<u8>, pub Vec<u8>);
 
 impl Patch for BinaryPatch {
@@ -48,6 +49,7 @@ impl Patch for BinaryPatch {
 }
 
 /// A unified diff style patch
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnifiedPatch {
     /// Name of the original file
     pub orig_name: Vec<u8>,

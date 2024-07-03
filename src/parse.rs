@@ -5,7 +5,7 @@ pub enum Error {
     BinaryFiles(Vec<u8>, Vec<u8>),
     PatchSyntax(&'static str, Vec<u8>),
     MalformedPatchHeader(&'static str, Vec<u8>),
-    MalformedHunkHeader(&'static str, Vec<u8>),
+    MalformedHunkHeader(String, Vec<u8>),
 }
 
 impl std::fmt::Display for Error {
@@ -241,7 +241,7 @@ where
                         // patch and there's "junk" at the end. Ignore the rest of the patch.
                         return None;
                     } else {
-                        return Some(Err(Error::MalformedHunkHeader(m, l)));
+                        return Some(Err(Error::MalformedHunkHeader(m.to_string(), l)));
                     }
                 }
             }
@@ -529,4 +529,253 @@ pub fn difference_index(atext: &[u8], btext: &[u8]) -> Option<usize> {
     (0..length).find(|&i| atext[i] != btext[i])
 }
 
+#[derive(PartialEq, Eq)]
+pub enum FileEntry {
+    Junk(Vec<Vec<u8>>),
+    Meta(Vec<u8>),
+    Patch(Vec<Vec<u8>>),
+}
+
+impl std::fmt::Debug for FileEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Junk(lines) => {
+                write!(f, "Junk[")?;
+                // Print the lines interspersed with commas
+                for (i, line) in lines.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", String::from_utf8_lossy(line))?;
+                }
+                write!(f, "]")?;
+                Ok(())
+            }
+            Self::Meta(line) => write!(f, "Meta({:?})", String::from_utf8_lossy(line)),
+            Self::Patch(lines) => {
+                write!(f, "Patch[")?;
+                // Print the lines interspersed with commas
+                for (i, line) in lines.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", String::from_utf8_lossy(line))?;
+                }
+                write!(f, "]")?;
+                Ok(())
+            }
+        }
+    }
+}
+
+struct FileEntryIter<I> {
+    iter: I,
+    saved_lines: Vec<Vec<u8>>,
+    is_dirty: bool,
+    orig_range: usize,
+    mod_range: usize,
+}
+
+impl<I> FileEntryIter<I>
+where
+    I: Iterator<Item = Vec<u8>>
+{
+    fn entry(&mut self) -> Option<FileEntry> {
+        if !self.saved_lines.is_empty() {
+            let lines = self.saved_lines.drain(..).collect();
+            if self.is_dirty {
+                Some(FileEntry::Junk(lines))
+            } else {
+                Some(FileEntry::Patch(lines))
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl<I> Iterator for FileEntryIter<I>
+where
+    I: Iterator<Item = Vec<u8>>,
+{
+    type Item = Result<FileEntry, Error>;
+
+    fn next(&mut self) -> Option<Result<FileEntry, Error>> {
+        loop {
+            let line = match self.iter.next() {
+                Some(line) => line,
+                None => {
+                    if let Some(entry) = self.entry() {
+                        return Some(Ok(entry));
+                    } else {
+                        return None;
+                    }
+                }
+            };
+            if line.starts_with(b"=== ") {
+                return Some(Ok(FileEntry::Meta(line)));
+            } else if line.starts_with(b"*** ") {
+                continue;
+            } else if line.starts_with(b"#") {
+                continue;
+            } else if self.orig_range > 0 || self.mod_range > 0 {
+                if line.starts_with(b"-") || line.starts_with(b" ") {
+                    self.orig_range -= 1;
+                }
+                if line.starts_with(b"+") || line.starts_with(b" ") {
+                    self.mod_range -= 1;
+                }
+                self.saved_lines.push(line);
+            } else if line.starts_with(b"--- ") || BINARY_FILES_RE.is_match(line.as_slice()) {
+                let entry = self.entry();
+                self.is_dirty = false;
+                self.saved_lines.push(line);
+                if let Some(entry) = entry {
+                    return Some(Ok(entry));
+                }
+            } else if line.starts_with(b"+++ ") && !self.is_dirty {
+                self.saved_lines.push(line);
+            } else if line.starts_with(b"@@") {
+                let hunk = match Hunk::from_header(line.as_slice()) {
+                    Ok(hunk) => hunk,
+                    Err(e) => { return Some(Err(Error::MalformedHunkHeader(e.to_string(), line.clone()))); }
+                };
+                self.orig_range = hunk.orig_range;
+                self.mod_range = hunk.mod_range;
+                self.saved_lines.push(line);
+            } else {
+                let entry = if !self.is_dirty {
+                    self.entry()
+                } else {
+                    None
+                };
+                self.saved_lines.push(line);
+                self.is_dirty = true;
+                if let Some(entry) = entry {
+                    return Some(Ok(entry));
+                }
+            }
+        }
+    }
+}
+
+/// Iterate through a series of lines.
+///
+/// # Arguments
+/// * `orig` - The original lines of the file.
+pub fn iter_file_patch<I>(
+    orig: I,
+) -> impl Iterator<Item = Result<FileEntry, Error>>
+where
+    I: Iterator<Item = Vec<u8>>,
+{
+    // FIXME: Docstring is not quite true.  We allow certain comments no
+    // matter what, If they startwith '===', '***', or '#' Someone should
+    // reexamine this logic and decide if we should include those in
+    // allow_dirty or restrict those to only being before the patch is found
+    // (as allow_dirty does).
+
+    FileEntryIter {
+        iter: orig,
+        orig_range: 0,
+        saved_lines: Vec::new(),
+        is_dirty: false,
+        mod_range: 0,
+    }
+}
+
+#[cfg(test)]
+mod iter_file_patch_tests {
+    #[test]
+    fn test_simple() {
+        let lines = [
+            "--- orig-3	2005-09-23 16:23:20.000000000 -0500\n",
+            "+++ mod-3	2005-09-23 16:23:38.000000000 -0500\n",
+            "@@ -1,3 +1,4 @@\n",
+            "+First line change\n",
+            " # Copyright (C) 2004, 2005 Aaron Bentley\n",
+            " # <aaron.bentley@utoronto.ca>\n",
+            " #\n",
+        ];
+        let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
+        let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(entries, vec![super::FileEntry::Patch(lines.iter().map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>())]);
+    }
+
+    #[test]
+    fn test_noise() {
+        let lines = [
+            "=== modified file 'test.txt'\n",
+            "--- orig-3	2005-09-23 16:23:20.000000000 -0500\n",
+            "+++ mod-3	2005-09-23 16:23:38.000000000 -0500\n",
+            "@@ -1,3 +1,4 @@\n",
+            "+First line change\n",
+" # Copyright (C) 2004, 2005 Aaron Bentley\n",
+            " # <aaron.bentley@utoronto.ca>\n",
+            " #\n",
+        ];
+        let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
+        let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(entries, vec![
+            super::FileEntry::Meta(lines[0].as_bytes().to_vec()),
+            super::FileEntry::Patch(lines.iter().skip(1).map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>())]);
+    }
+
+    #[test]
+    fn test_allow_dirty() {
+        let lines = [
+            "Foo bar\n",
+            "Bar blah\n",
+            "--- orig-3	2005-09-23 16:23:20.000000000 -0500\n",
+            "+++ mod-3	2005-09-23 16:23:38.000000000 -0500\n",
+            "@@ -1,3 +1,4 @@\n",
+            "+First line change\n",
+            " # Copyright (C) 2004, 2005 Aaron Bentley\n",
+            " # <aaron.bentley@utoronto.ca>\n",
+            " #\n",
+        ];
+        let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
+        let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(entries, vec![
+            super::FileEntry::Junk(lines.iter().take(2).map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>()),
+            super::FileEntry::Patch(lines.iter().skip(2).map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>())
+        ]);
+    }
+
+}
+
+pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn Patch>>, Error>
+where
+    I: Iterator<Item = Vec<u8>>
+{
+    iter_file_patch(iter)
+        .filter_map(|entry| match entry {
+            Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice()), true) {
+                Ok(patch) => Some(Ok(patch)),
+                Err(e) => Some(Err(e)),
+            },
+            Ok(FileEntry::Junk(_)) => None,
+            Ok(FileEntry::Meta(_)) => None,
+            Err(e) => Some(Err(e)),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod parse_patches_tests {
+    #[test]
+    fn test_simple() {
+        let lines = [
+            "--- orig-3	2005-09-23 16:23:20.000000000 -0500\n",
+            "+++ mod-3	2005-09-23 16:23:38.000000000 -0500\n",
+            "@@ -1,3 +1,4 @@\n",
+            "+First line change\n",
+            " # Copyright (C) 2004, 2005 Aaron Bentley\n",
+            " # <aaron.bentley@utoronto.ca>\n",
+            " #\n"
+        ];
+        let patches = super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).unwrap();
+        assert_eq!(patches.len(), 1);
+    }
+}
 
