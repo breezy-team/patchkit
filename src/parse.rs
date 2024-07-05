@@ -124,7 +124,7 @@ fn test_iter_lines_handle_nl() {
 
 static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> = lazy_regex::bytes_lazy_regex!(r"^Binary files (.+) and (.+) differ");
 
-pub(crate) fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
+pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
     iter_lines: &mut T,
 ) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
     let line = iter_lines
