@@ -113,7 +113,7 @@ impl UnifiedPatch {
             .into_bytes(),
         )?;
         for hunk in &self.hunks {
-            w.write_all(&hunk.as_bytes())?;
+            hunk.write(w)?;
         }
         Ok(())
     }
@@ -210,7 +210,7 @@ mod patch_tests {
                 lines: vec![super::HunkLine::ContextLine(b"foo\n".to_vec())],
             }],
         };
-        assert_eq!(patch.as_bytes(), b"--- foo\n+++ bar\n@@ -1 +2 @@\nfoo\n");
+        assert_eq!(patch.as_bytes(), b"--- foo\n+++ bar\n@@ -1 +2 @@\n foo\n");
     }
 }
 
@@ -230,20 +230,23 @@ impl HunkLine {
         }
     }
 
+    pub fn contents(&self) -> &[u8] {
+        match self {
+            Self::ContextLine(bytes) => bytes,
+            Self::InsertLine(bytes) => bytes,
+            Self::RemoveLine(bytes) => bytes,
+        }
+    }
+
     pub fn as_bytes(&self) -> Vec<u8> {
         let leadchar = self.char();
-        match self {
-            Self::ContextLine(contents)
-            | Self::InsertLine(contents)
-            | Self::RemoveLine(contents) => {
-                let terminator = if !contents.ends_with(&b"\n"[..]) {
-                    [b"\n".to_vec(), crate::parse::NO_NL.to_vec()].concat()
-                } else {
-                    b"".to_vec()
-                };
-                [vec![leadchar], contents.clone(), terminator].concat()
-            }
-        }
+        let contents = self.contents();
+        let terminator = if !contents.ends_with(&b"\n"[..]) {
+            [b"\n".to_vec(), crate::parse::NO_NL.to_vec()].concat()
+        } else {
+            b"".to_vec()
+        };
+        [vec![leadchar], contents.to_vec(), terminator].concat()
     }
 
     pub fn parse_line(line: &[u8]) -> Result<Self, MalformedLine> {
@@ -415,16 +418,18 @@ impl Hunk {
         }
     }
 
-    pub fn as_bytes(&self) -> Vec<u8> {
-        let mut lines = vec![self.get_header()];
+    pub fn write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        w.write_all(&self.get_header())?;
         for line in &self.lines {
-            lines.push(match line {
-                HunkLine::ContextLine(bytes) => bytes.clone(),
-                HunkLine::InsertLine(bytes) => bytes.clone(),
-                HunkLine::RemoveLine(bytes) => bytes.clone(),
-            });
+            w.write_all(&line.as_bytes())?;
         }
-        lines.concat()
+        Ok(())
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        self.write(&mut bytes).unwrap();
+        bytes
     }
 
     pub fn shift_to_mod(&self, pos: usize) -> Option<isize> {
