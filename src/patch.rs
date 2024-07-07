@@ -84,8 +84,14 @@ impl UnifiedPatch {
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
-        let mut lines = vec![
-            format!(
+        let mut bytes = Vec::new();
+        self.write(&mut bytes).unwrap();
+        bytes
+    }
+
+    pub fn write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        w.write_all(
+            &format!(
                 "--- {}{}\n",
                 String::from_utf8_lossy(&self.orig_name),
                 match &self.orig_ts {
@@ -94,7 +100,9 @@ impl UnifiedPatch {
                 }
             )
             .into_bytes(),
-            format!(
+        )?;
+        w.write_all(
+            &format!(
                 "+++ {}{}\n",
                 String::from_utf8_lossy(&self.mod_name),
                 match &self.mod_ts {
@@ -103,11 +111,11 @@ impl UnifiedPatch {
                 }
             )
             .into_bytes(),
-        ];
+        )?;
         for hunk in &self.hunks {
-            lines.push(hunk.as_bytes());
+            w.write_all(&hunk.as_bytes())?;
         }
-        lines.concat()
+        Ok(())
     }
 
     pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Self, crate::parse::Error>
@@ -214,7 +222,16 @@ pub enum HunkLine {
 }
 
 impl HunkLine {
-    fn get_str(&self, leadchar: u8) -> Vec<u8> {
+    pub fn char(&self) -> u8 {
+        match self {
+            Self::ContextLine(_) => b' ',
+            Self::InsertLine(_) => b'+',
+            Self::RemoveLine(_) => b'-',
+        }
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let leadchar = self.char();
         match self {
             Self::ContextLine(contents)
             | Self::InsertLine(contents)
@@ -227,18 +244,6 @@ impl HunkLine {
                 [vec![leadchar], contents.clone(), terminator].concat()
             }
         }
-    }
-
-    pub fn char(&self) -> u8 {
-        match self {
-            Self::ContextLine(_) => b' ',
-            Self::InsertLine(_) => b'+',
-            Self::RemoveLine(_) => b'-',
-        }
-    }
-
-    pub fn as_bytes(&self) -> Vec<u8> {
-        self.get_str(self.char())
     }
 
     pub fn parse_line(line: &[u8]) -> Result<Self, MalformedLine> {
