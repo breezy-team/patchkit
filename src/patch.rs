@@ -214,7 +214,7 @@ pub enum HunkLine {
 }
 
 impl HunkLine {
-    pub fn get_str(&self, leadchar: u8) -> Vec<u8> {
+    fn get_str(&self, leadchar: u8) -> Vec<u8> {
         match self {
             Self::ContextLine(contents)
             | Self::InsertLine(contents)
@@ -244,12 +244,12 @@ impl HunkLine {
     pub fn parse_line(line: &[u8]) -> Result<Self, MalformedLine> {
         if line.starts_with(b"\n") {
             Ok(Self::ContextLine(line.to_vec()))
-        } else if line.starts_with(b" ") {
-            Ok(Self::ContextLine(line[1..].to_vec()))
-        } else if line.starts_with(b"+") {
-            Ok(Self::InsertLine(line[1..].to_vec()))
-        } else if line.starts_with(b"-") {
-            Ok(Self::RemoveLine(line[1..].to_vec()))
+        } else if let Some(line) = line.strip_prefix(b" ") {
+            Ok(Self::ContextLine(line.to_vec()))
+        } else if let Some(line) = line.strip_prefix(b"+") {
+            Ok(Self::InsertLine(line.to_vec()))
+        } else if let Some(line) = line.strip_prefix(b"-") {
+            Ok(Self::RemoveLine(line.to_vec()))
         } else {
             Err(MalformedLine(line.to_vec()))
         }
@@ -293,6 +293,30 @@ mod hunkline_tests {
         assert_eq!(
             HunkLine::parse_line(&b"aaaaa\n"[..]).unwrap_err(),
             MalformedLine(b"aaaaa\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn as_bytes() {
+        assert_eq!(
+            HunkLine::ContextLine(b"foo\n".to_vec()).as_bytes(),
+            b" foo\n"
+        );
+        assert_eq!(
+            HunkLine::InsertLine(b"foo\n".to_vec()).as_bytes(),
+            b"+foo\n"
+        );
+        assert_eq!(
+            HunkLine::RemoveLine(b"foo\n".to_vec()).as_bytes(),
+            b"-foo\n"
+        );
+    }
+
+    #[test]
+    fn as_bytes_no_nl() {
+        assert_eq!(
+            HunkLine::ContextLine(b"foo".to_vec()).as_bytes(),
+            b" foo\n\\ No newline at end of file\n"
         );
     }
 }
@@ -521,4 +545,3 @@ mod parse_range_tests {
         parse_range("foo").unwrap_err();
     }
 }
-
