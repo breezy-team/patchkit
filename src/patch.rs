@@ -1,5 +1,5 @@
-use std::num::ParseIntError;
 use regex::bytes::Regex;
+use std::num::ParseIntError;
 
 #[derive(Debug)]
 pub enum ApplyError {
@@ -83,16 +83,44 @@ impl UnifiedPatch {
         }
     }
 
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut lines = vec![
+            format!(
+                "--- {}{}\n",
+                String::from_utf8_lossy(&self.orig_name),
+                match &self.orig_ts {
+                    Some(ts) => format!("\t{}", String::from_utf8_lossy(ts)),
+                    None => "".to_string(),
+                }
+            )
+            .into_bytes(),
+            format!(
+                "+++ {}{}\n",
+                String::from_utf8_lossy(&self.mod_name),
+                match &self.mod_ts {
+                    Some(ts) => format!("\t{}", String::from_utf8_lossy(ts)),
+                    None => "".to_string(),
+                }
+            )
+            .into_bytes(),
+        ];
+        for hunk in &self.hunks {
+            lines.push(hunk.as_bytes());
+        }
+        lines.concat()
+    }
+
     pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Self, crate::parse::Error>
     where
         I: Iterator<Item = &'a [u8]> + 'a,
     {
         let mut iter_lines = crate::parse::iter_lines_handle_nl(iter_lines);
 
-        let ((orig_name, orig_ts), (mod_name, mod_ts)) = match crate::parse::get_patch_names(&mut iter_lines) {
-            Ok(names) => names,
-            Err(e) => return Err(e),
-        };
+        let ((orig_name, orig_ts), (mod_name, mod_ts)) =
+            match crate::parse::get_patch_names(&mut iter_lines) {
+                Ok(names) => names,
+                Err(e) => return Err(e),
+            };
 
         let mut patch = Self::new(orig_name, orig_ts, mod_name, mod_ts);
         for hunk in crate::parse::iter_hunks(&mut iter_lines) {
@@ -107,14 +135,16 @@ impl UnifiedPatch {
     /// * `iter`: Iterator over lines
     pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<UnifiedPatch>, crate::parse::Error>
     where
-        I: Iterator<Item = Vec<u8>>
+        I: Iterator<Item = Vec<u8>>,
     {
         crate::parse::iter_file_patch(iter)
             .filter_map(|entry| match entry {
-                Ok(crate::parse::FileEntry::Patch(lines)) => match Self::parse_patch(lines.iter().map(|l| l.as_slice())) {
-                    Ok(patch) => Some(Ok(patch)),
-                    Err(e) => Some(Err(e)),
-                },
+                Ok(crate::parse::FileEntry::Patch(lines)) => {
+                    match Self::parse_patch(lines.iter().map(|l| l.as_slice())) {
+                        Ok(patch) => Some(Ok(patch)),
+                        Err(e) => Some(Err(e)),
+                    }
+                }
                 Ok(crate::parse::FileEntry::Junk(_)) => None,
                 Ok(crate::parse::FileEntry::Meta(_)) => None,
                 Err(e) => Some(Err(e)),
@@ -134,11 +164,45 @@ impl Patch for UnifiedPatch {
 
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, ApplyError> {
         let orig_lines = crate::parse::splitlines(orig).map(|l| l.to_vec());
-        let lines = crate::parse::iter_exact_patched_from_hunks(
-            orig_lines,
-            self.hunks.clone().into_iter()).collect::<Result<Vec<Vec<u8>>, crate::parse::PatchConflict>>()
-            .map_err(|e| ApplyError::Conflict(e.to_string()))?;
+        let lines =
+            crate::parse::iter_exact_patched_from_hunks(orig_lines, self.hunks.clone().into_iter())
+                .collect::<Result<Vec<Vec<u8>>, crate::parse::PatchConflict>>()
+                .map_err(|e| ApplyError::Conflict(e.to_string()))?;
         Ok(lines.concat())
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    #[test]
+    fn test_as_bytes_empty_hunks() {
+        let patch = super::UnifiedPatch {
+            orig_name: b"foo".to_vec(),
+            orig_ts: None,
+            mod_name: b"bar".to_vec(),
+            mod_ts: None,
+            hunks: vec![],
+        };
+        assert_eq!(patch.as_bytes(), b"--- foo\n+++ bar\n");
+    }
+
+    #[test]
+    fn test_as_bytes() {
+        let patch = super::UnifiedPatch {
+            orig_name: b"foo".to_vec(),
+            orig_ts: None,
+            mod_name: b"bar".to_vec(),
+            mod_ts: None,
+            hunks: vec![super::Hunk {
+                orig_pos: 1,
+                orig_range: 1,
+                mod_pos: 2,
+                mod_range: 1,
+                tail: None,
+                lines: vec![super::HunkLine::ContextLine(b"foo\n".to_vec())],
+            }],
+        };
+        assert_eq!(patch.as_bytes(), b"--- foo\n+++ bar\n@@ -1 +2 @@\nfoo\n");
     }
 }
 
@@ -210,11 +274,26 @@ mod hunkline_tests {
 
     #[test]
     fn test_parse_line() {
-        assert_eq!(HunkLine::parse_line(&b" foo\n"[..]).unwrap(), HunkLine::ContextLine(b"foo\n".to_vec()));
-        assert_eq!(HunkLine::parse_line(&b"-foo\n"[..]).unwrap(), HunkLine::RemoveLine(b"foo\n".to_vec()));
-        assert_eq!(HunkLine::parse_line(&b"+foo\n"[..]).unwrap(), HunkLine::InsertLine(b"foo\n".to_vec()));
-        assert_eq!(HunkLine::parse_line(&b"\n"[..]).unwrap(), HunkLine::ContextLine(b"\n".to_vec()));
-        assert_eq!(HunkLine::parse_line(&b"aaaaa\n"[..]).unwrap_err(), MalformedLine(b"aaaaa\n".to_vec()));
+        assert_eq!(
+            HunkLine::parse_line(&b" foo\n"[..]).unwrap(),
+            HunkLine::ContextLine(b"foo\n".to_vec())
+        );
+        assert_eq!(
+            HunkLine::parse_line(&b"-foo\n"[..]).unwrap(),
+            HunkLine::RemoveLine(b"foo\n".to_vec())
+        );
+        assert_eq!(
+            HunkLine::parse_line(&b"+foo\n"[..]).unwrap(),
+            HunkLine::InsertLine(b"foo\n".to_vec())
+        );
+        assert_eq!(
+            HunkLine::parse_line(&b"\n"[..]).unwrap(),
+            HunkLine::ContextLine(b"\n".to_vec())
+        );
+        assert_eq!(
+            HunkLine::parse_line(&b"aaaaa\n"[..]).unwrap_err(),
+            MalformedLine(b"aaaaa\n".to_vec())
+        );
     }
 }
 
@@ -264,12 +343,7 @@ impl Hunk {
             .ok_or_else(|| MalformedHunkHeader("Does not match format.", line.to_vec()))?;
         let (orig, modi) = match captures[1].split(|b| *b == b' ').collect::<Vec<&[u8]>>()[..] {
             [orig, modi] => Ok((orig, modi)),
-            _ => {
-                return Err(MalformedHunkHeader(
-                    "Does not match format.",
-                    line.to_vec(),
-                ))
-            }
+            _ => return Err(MalformedHunkHeader("Does not match format.", line.to_vec())),
         }?;
 
         if orig[0] != b'-' || modi[0] != b'+' {
@@ -278,14 +352,10 @@ impl Hunk {
                 line.to_vec(),
             ));
         }
-        let (orig_pos, orig_range) =
-            parse_range(&String::from_utf8_lossy(&orig[1..])).map_err(|_| {
-                MalformedHunkHeader("Original range is not a number.", line.to_vec())
-            })?;
-        let (mod_pos, mod_range) =
-            parse_range(&String::from_utf8_lossy(modi[1..].as_ref())).map_err(|_| {
-                MalformedHunkHeader("Modified range is not a number.", line.to_vec())
-            })?;
+        let (orig_pos, orig_range) = parse_range(&String::from_utf8_lossy(&orig[1..]))
+            .map_err(|_| MalformedHunkHeader("Original range is not a number.", line.to_vec()))?;
+        let (mod_pos, mod_range) = parse_range(&String::from_utf8_lossy(modi[1..].as_ref()))
+            .map_err(|_| MalformedHunkHeader("Modified range is not a number.", line.to_vec()))?;
         let tail = captures.get(3).map(|m| m.as_bytes().to_vec());
         Ok(Self::new(orig_pos, orig_range, mod_pos, mod_range, tail))
     }
@@ -359,7 +429,6 @@ impl Hunk {
         }
         Some(shift)
     }
-
 }
 
 #[cfg(test)]
