@@ -1,7 +1,7 @@
 //! A crate for parsing and manipulating patches.
-//! 
+//!
 //! # Examples
-//! 
+//!
 //! ```
 //! use patchkit::parse::parse_patch;
 //! use patchkit::patch::{Patch as _, UnifiedPatch, Hunk, HunkLine};
@@ -33,15 +33,16 @@
 //!         },
 //!     ],
 //! });
-//! 
+//!
 //! let applied = patch.apply_exact(&b"a\n"[..]).unwrap();
 //! assert_eq!(applied, b"b\n");
 //! ```
 
+pub mod ed;
+pub mod parse;
+pub mod patch;
 pub mod quilt;
 pub mod timestamp;
-pub mod patch;
-pub mod parse;
 
 // TODO: Return a Path instead of a PathBuf
 pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> std::path::PathBuf {
@@ -50,7 +51,16 @@ pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> std::path::PathBuf
 
 #[test]
 fn test_strip_prefix() {
-    assert_eq!(std::path::PathBuf::from("b"), strip_prefix(std::path::Path::new("a/b"), 1));
-    assert_eq!(std::path::PathBuf::from("a/b"), strip_prefix(std::path::Path::new("a/b"), 0));
-    assert_eq!(std::path::PathBuf::from(""), strip_prefix(std::path::Path::new("a/b"), 2));
+    assert_eq!(
+        std::path::PathBuf::from("b"),
+        strip_prefix(std::path::Path::new("a/b"), 1)
+    );
+    assert_eq!(
+        std::path::PathBuf::from("a/b"),
+        strip_prefix(std::path::Path::new("a/b"), 0)
+    );
+    assert_eq!(
+        std::path::PathBuf::from(""),
+        strip_prefix(std::path::Path::new("a/b"), 2)
+    );
 }
