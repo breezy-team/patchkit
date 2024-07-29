@@ -39,7 +39,9 @@ pub enum EdHunk {
 }
 
 pub fn parse_hunk_header(line: &[u8]) -> Option<(char, usize, usize)> {
-    let cap = lazy_regex::regex!("(\\d+)([adc])(\\d+)\n"B).captures(line)?;
+    let cap = lazy_regex::BytesRegex::new("(\\d+)([adc])(\\d+)\n")
+        .unwrap()
+        .captures(line)?;
 
     let start = std::str::from_utf8(cap.get(1).unwrap().as_bytes())
         .ok()?
