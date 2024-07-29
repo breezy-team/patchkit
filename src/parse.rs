@@ -1,4 +1,4 @@
-use crate::patch::{Hunk, HunkLine, Patch, UnifiedPatch, BinaryPatch};
+use crate::patch::{BinaryPatch, Hunk, HunkLine, Patch, UnifiedPatch};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -11,10 +11,16 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::BinaryFiles(oldname, newname) => write!(f, "Binary files {:?} and {:?} differ", oldname, newname),
+            Self::BinaryFiles(oldname, newname) => {
+                write!(f, "Binary files {:?} and {:?} differ", oldname, newname)
+            }
             Self::PatchSyntax(msg, line) => write!(f, "Patch syntax error: {} in {:?}", msg, line),
-            Self::MalformedPatchHeader(msg, line) => write!(f, "Malformed patch header: {} in {:?}", msg, line),
-            Self::MalformedHunkHeader(msg, line) => write!(f, "Malformed hunk header: {} in {:?}", msg, line),
+            Self::MalformedPatchHeader(msg, line) => {
+                write!(f, "Malformed patch header: {} in {:?}", msg, line)
+            }
+            Self::MalformedHunkHeader(msg, line) => {
+                write!(f, "Malformed hunk header: {} in {:?}", msg, line)
+            }
         }
     }
 }
@@ -25,23 +31,21 @@ impl std::error::Error for Error {}
 pub fn splitlines(data: &[u8]) -> impl Iterator<Item = &'_ [u8]> {
     let mut start = 0;
     let mut end = 0;
-    std::iter::from_fn(move || {
-        loop {
-            if end == data.len() {
-                if start == end {
-                    return None;
-                }
-                let line = &data[start..end];
-                start = end;
-                return Some(line);
+    std::iter::from_fn(move || loop {
+        if end == data.len() {
+            if start == end {
+                return None;
             }
-            let c = data[end];
-            end += 1;
-            if c == b'\n' {
-                let line = &data[start..end];
-                start = end;
-                return Some(line);
-            }
+            let line = &data[start..end];
+            start = end;
+            return Some(line);
+        }
+        let c = data[end];
+        end += 1;
+        if c == b'\n' {
+            let line = &data[start..end];
+            start = end;
+            return Some(line);
         }
     })
 }
@@ -52,7 +56,14 @@ mod splitlines_tests {
     fn test_simple() {
         let data = b"line 1\nline 2\nline 3\n";
         let lines: Vec<&[u8]> = super::splitlines(data).collect();
-        assert_eq!(lines, vec!["line 1\n".as_bytes(), "line 2\n".as_bytes(), "line 3\n".as_bytes()]);
+        assert_eq!(
+            lines,
+            vec![
+                "line 1\n".as_bytes(),
+                "line 2\n".as_bytes(),
+                "line 3\n".as_bytes()
+            ]
+        );
     }
 
     #[test]
@@ -80,7 +91,7 @@ pub const NO_NL: &[u8] = b"\\ No newline at end of file\n";
 /// without one.
 pub fn iter_lines_handle_nl<'a, I>(mut iter_lines: I) -> impl Iterator<Item = &'a [u8]> + 'a
 where
-    I: Iterator<Item = &'a [u8]> + 'a
+    I: Iterator<Item = &'a [u8]> + 'a,
 {
     let mut last_line: Option<&'a [u8]> = None;
     std::iter::from_fn(move || {
@@ -112,7 +123,7 @@ fn test_iter_lines_handle_nl() {
         &b"line 2\n"[..],
         &b"line 3\n"[..],
         &b"line 4\n"[..],
-        &b"\\ No newline at end of file\n"[..]
+        &b"\\ No newline at end of file\n"[..],
     ];
     let mut iter = iter_lines_handle_nl(lines.into_iter());
     assert_eq!(iter.next(), Some("line 1\n".as_bytes()));
@@ -122,7 +133,10 @@ fn test_iter_lines_handle_nl() {
     assert_eq!(iter.next(), None);
 }
 
-static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> = lazy_regex::bytes_lazy_regex!(r"^Binary files (.+) and (.+) differ");
+static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        lazy_regex::BytesRegex::new(r"^Binary files (.+) and (.+) differ").unwrap()
+    });
 
 pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
     iter_lines: &mut T,
@@ -141,8 +155,7 @@ pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
         .ok_or_else(|| Error::MalformedPatchHeader("No orig name", line.to_vec()))?
         .strip_suffix(b"\n")
         .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec()))?;
-    let (orig_name, orig_ts) = match orig_name.split(|&c| c == b'\t').collect::<Vec<_>>()[..]
-    {
+    let (orig_name, orig_ts) = match orig_name.split(|&c| c == b'\t').collect::<Vec<_>>()[..] {
         [name, ts] => (name.to_vec(), Some(ts.to_vec())),
         [name] => (name.to_vec(), None),
         _ => return Err(Error::MalformedPatchHeader("No orig line", line.to_vec())),
@@ -176,29 +189,38 @@ mod get_patch_names_tests {
     fn test_simple() {
         let lines = [
             &b"--- baz	2009-10-14 19:49:59 +0000\n"[..],
-            &b"+++ quxx	2009-10-14 19:51:00 +0000\n"[..]];
+            &b"+++ quxx	2009-10-14 19:51:00 +0000\n"[..],
+        ];
         let mut iter = lines.into_iter();
         let (old, new) = super::get_patch_names(&mut iter).unwrap();
-        assert_eq!(old, (b"baz".to_vec(), Some(b"2009-10-14 19:49:59 +0000".to_vec())));
-        assert_eq!(new, (b"quxx".to_vec(), Some(b"2009-10-14 19:51:00 +0000".to_vec())));
+        assert_eq!(
+            old,
+            (b"baz".to_vec(), Some(b"2009-10-14 19:49:59 +0000".to_vec()))
+        );
+        assert_eq!(
+            new,
+            (
+                b"quxx".to_vec(),
+                Some(b"2009-10-14 19:51:00 +0000".to_vec())
+            )
+        );
     }
 
     #[test]
     fn test_binary() {
-        let lines = [
-            &b"Binary files qoo and bar differ\n"[..]
-        ];
+        let lines = [&b"Binary files qoo and bar differ\n"[..]];
         let mut iter = lines.into_iter();
         let e = super::get_patch_names(&mut iter).unwrap_err();
-        assert_eq!(e, super::Error::BinaryFiles(b"qoo".to_vec(), b"bar".to_vec()));
+        assert_eq!(
+            e,
+            super::Error::BinaryFiles(b"qoo".to_vec(), b"bar".to_vec())
+        );
     }
 }
 
-pub fn iter_hunks<'a, I>(
-    iter_lines: &mut I,
-) -> impl Iterator<Item = Result<Hunk, Error>> + '_
+pub fn iter_hunks<'a, I>(iter_lines: &mut I) -> impl Iterator<Item = Result<Hunk, Error>> + '_
 where
-    I: Iterator<Item = &'a [u8]>
+    I: Iterator<Item = &'a [u8]>,
 {
     std::iter::from_fn(move || {
         while let Some(line) = iter_lines.next() {
@@ -213,7 +235,10 @@ where
                         let line = iter_lines.next()?;
                         match HunkLine::parse_line(line) {
                             Err(_) => {
-                                return Some(Err(Error::PatchSyntax("Invalid hunk line", line.to_vec())));
+                                return Some(Err(Error::PatchSyntax(
+                                    "Invalid hunk line",
+                                    line.to_vec(),
+                                )));
                             }
                             Ok(hunk_line) => {
                                 if matches!(
@@ -240,8 +265,7 @@ where
             }
         }
         None
-    }
-    )
+    })
 }
 
 #[cfg(test)]
@@ -249,7 +273,8 @@ mod iter_hunks_tests {
     use super::{Hunk, HunkLine};
     #[test]
     fn test_iter_hunks() {
-        let mut lines = super::splitlines(br#"@@ -391,6 +391,8 @@
+        let mut lines = super::splitlines(
+            br#"@@ -391,6 +391,8 @@
                  else:
                      assert isinstance(hunk_line, RemoveLine)
                  line_no += 1
@@ -259,23 +284,28 @@ mod iter_hunks_tests {
  import unittest
  import os.path
 
-"#);
+"#,
+        );
 
-        let hunks = super::iter_hunks(&mut lines).collect::<Result<Vec<Hunk>, crate::parse::Error>>().unwrap();
+        let hunks = super::iter_hunks(&mut lines)
+            .collect::<Result<Vec<Hunk>, crate::parse::Error>>()
+            .unwrap();
 
         let mut expected_hunk = Hunk::new(391, 6, 391, 8, None);
         expected_hunk.lines.extend([
             HunkLine::ContextLine(b"                else:\n".to_vec()),
-            HunkLine::ContextLine(b"                    assert isinstance(hunk_line, RemoveLine)\n".to_vec()),
+            HunkLine::ContextLine(
+                b"                    assert isinstance(hunk_line, RemoveLine)\n".to_vec(),
+            ),
             HunkLine::ContextLine(b"                line_no += 1\n".to_vec()),
             HunkLine::InsertLine(b"    for line in orig_lines:\n".to_vec()),
             HunkLine::InsertLine(b"        yield line\n".to_vec()),
             HunkLine::ContextLine(b"                    \n".to_vec()),
             HunkLine::ContextLine(b"import unittest\n".to_vec()),
-            HunkLine::ContextLine(b"import os.path\n".to_vec())
+            HunkLine::ContextLine(b"import os.path\n".to_vec()),
         ]);
 
-        assert_eq!(&expected_hunk, hunks.iter().next().unwrap());
+        assert_eq!(&expected_hunk, hunks.first().unwrap());
     }
 }
 
@@ -436,7 +466,6 @@ impl<H: Iterator<Item = Hunk>, L: Iterator<Item = Vec<u8>>> Iterator for Patched
                             hunk_lines.reverse();
                             self.hunk_lines = hunk_lines;
                         }
-
                     }
                 }
             }
@@ -455,15 +484,22 @@ mod iter_exact_patched_from_hunks_tests {
             b"line 4\n".to_vec(),
         ];
         let mut hunk = crate::patch::Hunk::new(1, 1, 1, 1, None);
-        hunk.lines.push(crate::patch::HunkLine::ContextLine(b"line 1\n".to_vec()));
+        hunk.lines
+            .push(crate::patch::HunkLine::ContextLine(b"line 1\n".to_vec()));
         let hunks = vec![hunk];
-        let result = super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter()).collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(&result, &[
-            b"line 1\n".to_vec(),
-            b"line 2\n".to_vec(),
-            b"line 3\n".to_vec(),
-            b"line 4\n".to_vec(),
-        ]);
+        let result =
+            super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter())
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+        assert_eq!(
+            &result,
+            &[
+                b"line 1\n".to_vec(),
+                b"line 2\n".to_vec(),
+                b"line 3\n".to_vec(),
+                b"line 4\n".to_vec(),
+            ]
+        );
     }
 
     #[test]
@@ -475,17 +511,25 @@ mod iter_exact_patched_from_hunks_tests {
             b"line 4\n".to_vec(),
         ];
         let mut hunk = crate::patch::Hunk::new(1, 0, 1, 1, None);
-        hunk.lines.push(crate::patch::HunkLine::InsertLine(b"line 0\n".to_vec()));
-        hunk.lines.push(crate::patch::HunkLine::ContextLine(b"line 1\n".to_vec()));
+        hunk.lines
+            .push(crate::patch::HunkLine::InsertLine(b"line 0\n".to_vec()));
+        hunk.lines
+            .push(crate::patch::HunkLine::ContextLine(b"line 1\n".to_vec()));
         let hunks = vec![hunk];
-        let result = super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter()).collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(&result, &[
-            b"line 0\n".to_vec(),
-            b"line 1\n".to_vec(),
-            b"line 2\n".to_vec(),
-            b"line 3\n".to_vec(),
-            b"line 4\n".to_vec(),
-        ]);
+        let result =
+            super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter())
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+        assert_eq!(
+            &result,
+            &[
+                b"line 0\n".to_vec(),
+                b"line 1\n".to_vec(),
+                b"line 2\n".to_vec(),
+                b"line 3\n".to_vec(),
+                b"line 4\n".to_vec(),
+            ]
+        );
     }
 }
 
@@ -570,7 +614,7 @@ struct FileEntryIter<I> {
 
 impl<I> FileEntryIter<I>
 where
-    I: Iterator<Item = Vec<u8>>
+    I: Iterator<Item = Vec<u8>>,
 {
     fn entry(&mut self) -> Option<FileEntry> {
         if !self.saved_lines.is_empty() {
@@ -630,17 +674,15 @@ where
             } else if line.starts_with(b"@@") {
                 let hunk = match Hunk::from_header(line.as_slice()) {
                     Ok(hunk) => hunk,
-                    Err(e) => { return Some(Err(Error::MalformedHunkHeader(e.to_string(), line.clone()))); }
+                    Err(e) => {
+                        return Some(Err(Error::MalformedHunkHeader(e.to_string(), line.clone())));
+                    }
                 };
                 self.orig_range = hunk.orig_range;
                 self.mod_range = hunk.mod_range;
                 self.saved_lines.push(line);
             } else {
-                let entry = if !self.is_dirty {
-                    self.entry()
-                } else {
-                    None
-                };
+                let entry = if !self.is_dirty { self.entry() } else { None };
                 self.saved_lines.push(line);
                 self.is_dirty = true;
                 if let Some(entry) = entry {
@@ -655,9 +697,7 @@ where
 ///
 /// # Arguments
 /// * `orig` - The original lines of the file.
-pub fn iter_file_patch<I>(
-    orig: I,
-) -> impl Iterator<Item = Result<FileEntry, Error>>
+pub fn iter_file_patch<I>(orig: I) -> impl Iterator<Item = Result<FileEntry, Error>>
 where
     I: Iterator<Item = Vec<u8>>,
 {
@@ -685,7 +725,15 @@ mod iter_file_patch_tests {
         ];
         let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
         let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(entries, vec![super::FileEntry::Patch(lines.iter().map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>())]);
+        assert_eq!(
+            entries,
+            vec![super::FileEntry::Patch(
+                lines
+                    .iter()
+                    .map(|l| l.as_bytes().to_vec())
+                    .collect::<Vec<_>>()
+            )]
+        );
     }
 
     #[test]
@@ -696,15 +744,25 @@ mod iter_file_patch_tests {
             "+++ mod-3	2005-09-23 16:23:38.000000000 -0500\n",
             "@@ -1,3 +1,4 @@\n",
             "+First line change\n",
-" # Copyright (C) 2004, 2005 Aaron Bentley\n",
+            " # Copyright (C) 2004, 2005 Aaron Bentley\n",
             " # <aaron.bentley@utoronto.ca>\n",
             " #\n",
         ];
         let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
         let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(entries, vec![
-            super::FileEntry::Meta(lines[0].as_bytes().to_vec()),
-            super::FileEntry::Patch(lines.iter().skip(1).map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>())]);
+        assert_eq!(
+            entries,
+            vec![
+                super::FileEntry::Meta(lines[0].as_bytes().to_vec()),
+                super::FileEntry::Patch(
+                    lines
+                        .iter()
+                        .skip(1)
+                        .map(|l| l.as_bytes().to_vec())
+                        .collect::<Vec<_>>()
+                )
+            ]
+        );
     }
 
     #[test]
@@ -722,12 +780,26 @@ mod iter_file_patch_tests {
         ];
         let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
         let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(entries, vec![
-            super::FileEntry::Junk(lines.iter().take(2).map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>()),
-            super::FileEntry::Patch(lines.iter().skip(2).map(|l| l.as_bytes().to_vec()).collect::<Vec<_>>())
-        ]);
+        assert_eq!(
+            entries,
+            vec![
+                super::FileEntry::Junk(
+                    lines
+                        .iter()
+                        .take(2)
+                        .map(|l| l.as_bytes().to_vec())
+                        .collect::<Vec<_>>()
+                ),
+                super::FileEntry::Patch(
+                    lines
+                        .iter()
+                        .skip(2)
+                        .map(|l| l.as_bytes().to_vec())
+                        .collect::<Vec<_>>()
+                )
+            ]
+        );
     }
-
 }
 
 /// Parse a patch file
@@ -736,7 +808,7 @@ mod iter_file_patch_tests {
 /// * `iter`: Iterator over lines
 pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn Patch>>, Error>
 where
-    I: Iterator<Item = Vec<u8>>
+    I: Iterator<Item = Vec<u8>>,
 {
     iter_file_patch(iter)
         .filter_map(|entry| match entry {
@@ -762,10 +834,9 @@ mod parse_patches_tests {
             "+First line change\n",
             " # Copyright (C) 2004, 2005 Aaron Bentley\n",
             " # <aaron.bentley@utoronto.ca>\n",
-            " #\n"
+            " #\n",
         ];
         let patches = super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).unwrap();
         assert_eq!(patches.len(), 1);
     }
 }
-
