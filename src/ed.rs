@@ -7,28 +7,43 @@ pub struct EdPatch {
     pub hunks: Vec<EdHunk>,
 }
 
+impl crate::ContentPatch for EdPatch {
+    fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
+        let lines = splitlines(orig).collect::<Vec<_>>();
+        let result = self.apply(&lines).map_err(|e| crate::ApplyError::Conflict(e))?;
+        Ok(result)
+    }
+}
+
 impl EdPatch {
     /// Apply the patch to the data.
-    pub fn apply(&self, data: &[Vec<u8>]) -> Result<Vec<u8>, Vec<u8>> {
+    pub fn apply(&self, data: &[&[u8]]) -> Result<Vec<u8>, String> {
         let mut data = data.to_vec();
         for hunk in &self.hunks {
             match hunk {
-                EdHunk::Remove(start, _end, expected)
-                | EdHunk::Change(start, _end, expected, _) => {
+                EdHunk::Remove(start, end, expected)
+                | EdHunk::Change(start, end, expected, _) => {
+                    assert_eq!(start, end);
                     let existing = match data.get(start - 1) {
                         Some(existing) => existing,
-                        None => return Err(b"".to_vec()),
+                        None => return Err(format!("line {} does not exist", start).into()),
                     };
                     if existing != expected {
-                        return Err(existing.to_vec());
+                        return Err(format!(
+                            "line {} does not match expected: {:?} != {:?}",
+                            start,
+                            String::from_utf8_lossy(existing).to_string(),
+                            String::from_utf8_lossy(expected).to_string(),
+                        ));
                     }
                     data.remove(start - 1);
                 }
                 _ => {}
             }
             match hunk {
-                EdHunk::Add(start, _end, added) | EdHunk::Change(start, _end, _, added) => {
-                    data.insert(start - 1, added.to_vec());
+                EdHunk::Add(start, end, added) | EdHunk::Change(start, end, _, added) => {
+                    assert_eq!(start, end);
+                    data.insert(start - 1, added);
                 }
                 _ => {}
             }
@@ -97,11 +112,34 @@ pub fn parse_hunk_line<'a>(prefix: &[u8], line: &'a [u8]) -> Option<&'a [u8]> {
     }
 }
 
+/// Split lines but preserve trailing newlines
+pub fn splitlines(data: &[u8]) -> impl Iterator<Item = &'_ [u8]> {
+    let mut start = 0;
+    let mut end = 0;
+    std::iter::from_fn(move || loop {
+        if end == data.len() {
+            if start == end {
+                return None;
+            }
+            let line = &data[start..end];
+            start = end;
+            return Some(line);
+        }
+        let c = data[end];
+        end += 1;
+        if c == b'\n' {
+            let line = &data[start..end];
+            start = end;
+            return Some(line);
+        }
+    })
+}
+
 impl EdPatch {
     /// Parse a patch in the ed format.
     pub fn parse_patch(patch: &[u8]) -> Result<EdPatch, Vec<u8>> {
         let mut hunks = Vec::new();
-        let mut lines = crate::parse::splitlines(patch);
+        let mut lines = splitlines(patch);
         while let Some(line) = lines.next() {
             if line.is_empty() {
                 continue;
@@ -154,8 +192,8 @@ mod apply_patch_tests {
         let patch = EdPatch {
             hunks: vec![EdHunk::Add(1, 1, b"hello\n".to_vec())],
         };
-        let data = vec![b"world\n".to_vec()];
-        assert_eq!(patch.apply(&data).unwrap(), b"hello\nworld\n".to_vec());
+        let data = &[&b"world\n"[..]][..];
+        assert_eq!(patch.apply(data).unwrap(), b"hello\nworld\n".to_vec());
     }
 
     #[test]
@@ -163,8 +201,8 @@ mod apply_patch_tests {
         let patch = EdPatch {
             hunks: vec![EdHunk::Remove(2, 2, b"world\n".to_vec())],
         };
-        let data = vec![b"hello\n".to_vec(), b"world\n".to_vec()];
-        assert_eq!(patch.apply(&data).unwrap(), b"hello\n".to_vec());
+        let data = &[&b"hello\n"[..], &b"world\n"[..]];
+        assert_eq!(patch.apply(data).unwrap(), b"hello\n".to_vec());
     }
 
     #[test]
@@ -177,8 +215,8 @@ mod apply_patch_tests {
                 b"hello\n".to_vec(),
             )],
         };
-        let data = vec![b"hello\n".to_vec(), b"world\n".to_vec()];
-        assert_eq!(patch.apply(&data).unwrap(), b"hello\nhello\n".to_vec());
+        let data = &[&b"hello\n"[..], &b"world\n"[..]];
+        assert_eq!(patch.apply(data).unwrap(), b"hello\nhello\n".to_vec());
     }
 }
 
