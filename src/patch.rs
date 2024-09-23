@@ -1,10 +1,15 @@
+//! Patching utilities
+//!
 use regex::bytes::Regex;
 use std::num::ParseIntError;
 
+/// Error that occurs when applying a patch
 #[derive(Debug)]
 pub enum ApplyError {
+    /// A conflict occurred
     Conflict(String),
 
+    /// The patch is unapplyable
     Unapplyable,
 }
 
@@ -27,6 +32,7 @@ pub trait Patch {
     /// New file name
     fn newname(&self) -> &[u8];
 
+    /// Apply this patch to a file
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, ApplyError>;
 }
 
@@ -68,6 +74,7 @@ pub struct UnifiedPatch {
 }
 
 impl UnifiedPatch {
+    /// Create a new patch
     pub fn new(
         orig_name: Vec<u8>,
         orig_ts: Option<Vec<u8>>,
@@ -83,12 +90,14 @@ impl UnifiedPatch {
         }
     }
 
+    /// Serialize this patch to a byte vector
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         self.write(&mut bytes).unwrap();
         bytes
     }
 
+    /// Write this patch to a writer
     pub fn write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         w.write_all(
             &format!(
@@ -118,6 +127,10 @@ impl UnifiedPatch {
         Ok(())
     }
 
+    /// Parse a unified patch file
+    ///
+    /// # Arguments
+    /// * `iter_lines`: Iterator over lines
     pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Self, crate::parse::Error>
     where
         I: Iterator<Item = &'a [u8]> + 'a,
@@ -162,14 +175,17 @@ impl UnifiedPatch {
 }
 
 impl Patch for UnifiedPatch {
+    /// Old file name
     fn oldname(&self) -> &[u8] {
         &self.orig_name
     }
 
+    /// New file name
     fn newname(&self) -> &[u8] {
         &self.mod_name
     }
 
+    /// Apply this patch to a file
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, ApplyError> {
         let orig_lines = crate::parse::splitlines(orig).map(|l| l.to_vec());
         let lines =
@@ -214,14 +230,21 @@ mod patch_tests {
     }
 }
 
+/// A line in a hunk
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HunkLine {
+    /// A line that is unchanged
     ContextLine(Vec<u8>),
+
+    /// A line that was inserted
     InsertLine(Vec<u8>),
+
+    /// A line that was removed
     RemoveLine(Vec<u8>),
 }
 
 impl HunkLine {
+    /// Get the character that represents this hunk line
     pub fn char(&self) -> u8 {
         match self {
             Self::ContextLine(_) => b' ',
@@ -230,6 +253,7 @@ impl HunkLine {
         }
     }
 
+    /// Get the contents of this hunk line
     pub fn contents(&self) -> &[u8] {
         match self {
             Self::ContextLine(bytes) => bytes,
@@ -238,6 +262,7 @@ impl HunkLine {
         }
     }
 
+    /// Serialize this hunk line to a byte vector
     pub fn as_bytes(&self) -> Vec<u8> {
         let leadchar = self.char();
         let contents = self.contents();
@@ -249,6 +274,7 @@ impl HunkLine {
         [vec![leadchar], contents.to_vec(), terminator].concat()
     }
 
+    /// Parse a hunk line
     pub fn parse_line(line: &[u8]) -> Result<Self, MalformedLine> {
         if line.starts_with(b"\n") {
             Ok(Self::ContextLine(line.to_vec()))
@@ -264,6 +290,7 @@ impl HunkLine {
     }
 }
 
+/// An error that occurs when parsing a hunk line
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MalformedLine(Vec<u8>);
 
@@ -329,6 +356,7 @@ mod hunkline_tests {
     }
 }
 
+/// An error that occurs when parsing a hunk header
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MalformedHunkHeader(pub &'static str, pub Vec<u8>);
 
@@ -340,17 +368,30 @@ impl std::fmt::Display for MalformedHunkHeader {
 
 impl std::error::Error for MalformedHunkHeader {}
 
+/// A hunk in a patch
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Hunk {
+    /// Position in the original file
     pub orig_pos: usize,
+
+    /// Number of lines in the original file
     pub orig_range: usize,
+
+    /// Position in the modified file
     pub mod_pos: usize,
+
+    /// Number of lines in the modified file
     pub mod_range: usize,
+
+    /// Tail of the hunk header
     pub tail: Option<Vec<u8>>,
+
+    /// Lines in the hunk
     pub lines: Vec<HunkLine>,
 }
 
 impl Hunk {
+    /// Create a new hunk
     pub fn new(
         orig_pos: usize,
         orig_range: usize,
@@ -368,6 +409,7 @@ impl Hunk {
         }
     }
 
+    /// Parse a hunk header
     pub fn from_header(line: &[u8]) -> Result<Self, MalformedHunkHeader> {
         let re = Regex::new(r"\@\@ ([^@]*) \@\@( (.*))?\n").unwrap();
         let captures = re
@@ -392,10 +434,12 @@ impl Hunk {
         Ok(Self::new(orig_pos, orig_range, mod_pos, mod_range, tail))
     }
 
+    /// Get the lines in this hunk
     pub fn lines(&self) -> &[HunkLine] {
         &self.lines
     }
 
+    /// Get the header of this hunk
     pub fn get_header(&self) -> Vec<u8> {
         let tail_str = match &self.tail {
             Some(tail) => [b" ".to_vec(), tail.to_vec()].concat(),
@@ -418,6 +462,7 @@ impl Hunk {
         }
     }
 
+    /// Write this hunk to a writer
     pub fn write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         w.write_all(&self.get_header())?;
         for line in &self.lines {
@@ -426,12 +471,14 @@ impl Hunk {
         Ok(())
     }
 
+    /// Serialize this hunk to a byte vector
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         self.write(&mut bytes).unwrap();
         bytes
     }
 
+    /// Shift a position to the modified file
     pub fn shift_to_mod(&self, pos: usize) -> Option<isize> {
         if pos < self.orig_pos - 1 {
             Some(0)
@@ -442,6 +489,7 @@ impl Hunk {
         }
     }
 
+    /// Shift a position to the original file
     fn shift_to_mod_lines(&self, pos: usize) -> Option<isize> {
         let mut position = self.orig_pos - 1;
         let mut shift = 0;
@@ -463,6 +511,19 @@ impl Hunk {
         }
         Some(shift)
     }
+}
+
+/// Parse a patch range, handling the "1" special-case
+pub fn parse_range(textrange: &str) -> Result<(usize, usize), ParseIntError> {
+    let tmp: Vec<&str> = textrange.split(',').collect();
+    let (pos, brange) = if tmp.len() == 1 {
+        (tmp[0], "1")
+    } else {
+        (tmp[0], tmp[1])
+    };
+    let pos = pos.parse::<usize>()?;
+    let range = brange.parse::<usize>()?;
+    Ok((pos, range))
 }
 
 #[cfg(test)]
@@ -529,19 +590,6 @@ mod hunk_tests {
         assert_malformed_header(&b"@@ -34,11 +50,6.5 @@\n"[..]);
         assert_malformed_header(&b"@@ -34,11 +50,-6 @@\n"[..]);
     }
-}
-
-/// Parse a patch range, handling the "1" special-case
-pub fn parse_range(textrange: &str) -> Result<(usize, usize), ParseIntError> {
-    let tmp: Vec<&str> = textrange.split(',').collect();
-    let (pos, brange) = if tmp.len() == 1 {
-        (tmp[0], "1")
-    } else {
-        (tmp[0], tmp[1])
-    };
-    let pos = pos.parse::<usize>()?;
-    let range = brange.parse::<usize>()?;
-    Ok((pos, range))
 }
 
 #[cfg(test)]

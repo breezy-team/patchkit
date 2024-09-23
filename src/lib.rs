@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! A crate for parsing and manipulating patches.
 //!
 //! # Examples
@@ -45,6 +46,7 @@ pub mod quilt;
 pub mod timestamp;
 
 // TODO: Return a Path instead of a PathBuf
+/// Strip the specified number of path components from the beginning of the path.
 pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> std::path::PathBuf {
     path.components().skip(prefix).collect()
 }

@@ -1,18 +1,30 @@
+//! Functions for parsing and formatting patch dates.
 use lazy_static::lazy_static;
 
+/// Error parsing a patch date.
 #[derive(Debug)]
 pub enum ParsePatchDateError {
+    /// The date string is invalid.
     InvalidDate(String),
+
+    /// The date string is missing a timezone offset.
     MissingTimezoneOffset(String),
+
+    /// The timezone offset is invalid.
     InvalidTimezoneOffset(String),
 }
 
+/// Error formatting a patch date.
 #[derive(Debug)]
 pub enum FormatPatchDateError {
+    /// The timezone offset is invalid.
     InvalidTimezoneOffset(i64),
+
+    /// The time is negative.
     NegativeTime(i64, i64),
 }
 
+/// Format a patch date.
 pub fn format_patch_date(secs: i64, mut offset: i64) -> Result<String, FormatPatchDateError> {
     if offset % 60 != 0 {
         return Err(FormatPatchDateError::InvalidTimezoneOffset(offset));
@@ -28,14 +40,21 @@ pub fn format_patch_date(secs: i64, mut offset: i64) -> Result<String, FormatPat
         return Err(FormatPatchDateError::NegativeTime(secs, offset));
     }
 
-    let dt = chrono::DateTime::<chrono::Utc>::from_utc(chrono::NaiveDateTime::from_timestamp(secs, 0), chrono::Utc);
+    let dt = chrono::DateTime::from_timestamp(secs, 0).unwrap();
 
     let sign = if offset >= 0 { '+' } else { '-' };
     let hours = offset.abs() / 3600;
     let minutes = (offset.abs() / 60) % 60;
-    Ok(format!("{} {}{:02}{:02}", dt.format("%Y-%m-%d %H:%M:%S"), sign ,hours, minutes))
+    Ok(format!(
+        "{} {}{:02}{:02}",
+        dt.format("%Y-%m-%d %H:%M:%S"),
+        sign,
+        hours,
+        minutes
+    ))
 }
 
+/// Parse a patch date.
 pub fn parse_patch_date(date_str: &str) -> Result<(i64, i64), ParsePatchDateError> {
     lazy_static! {
         // Format for patch dates: %Y-%m-%d %H:%M:%S [+-]%H%M
@@ -82,7 +101,7 @@ pub fn parse_patch_date(date_str: &str) -> Result<(i64, i64), ParsePatchDateErro
         .map_err(|_| ParsePatchDateError::InvalidDate(date_str.to_string()))?
         - chrono::Duration::seconds(offset);
 
-    Ok((dt.timestamp(), offset))
+    Ok((dt.and_utc().timestamp(), offset))
 }
 
 #[cfg(test)]
