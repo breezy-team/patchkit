@@ -45,10 +45,13 @@ pub mod patch;
 pub mod quilt;
 pub mod timestamp;
 
-// TODO: Return a Path instead of a PathBuf
 /// Strip the specified number of path components from the beginning of the path.
-pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> std::path::PathBuf {
-    path.components().skip(prefix).collect()
+pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> &std::path::Path {
+    let mut components = path.components();
+    for _ in 0..prefix {
+        components.next();
+    }
+    std::path::Path::new(components.as_path())
 }
 
 #[test]
