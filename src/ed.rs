@@ -1,14 +1,20 @@
+//! Parsing of ed-style patches
+
+/// A patch in the ed format.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdPatch {
+    /// The hunks in the patch.
     pub hunks: Vec<EdHunk>,
 }
 
 impl EdPatch {
+    /// Apply the patch to the data.
     pub fn apply(&self, data: &[Vec<u8>]) -> Result<Vec<u8>, Vec<u8>> {
         let mut data = data.to_vec();
         for hunk in &self.hunks {
             match hunk {
-                EdHunk::Remove(start, end, expected) | EdHunk::Change(start, end, expected, _) => {
+                EdHunk::Remove(start, _end, expected)
+                | EdHunk::Change(start, _end, expected, _) => {
                     let existing = match data.get(start - 1) {
                         Some(existing) => existing,
                         None => return Err(b"".to_vec()),
@@ -21,7 +27,7 @@ impl EdPatch {
                 _ => {}
             }
             match hunk {
-                EdHunk::Add(start, end, added) | EdHunk::Change(start, end, _, added) => {
+                EdHunk::Add(start, _end, added) | EdHunk::Change(start, _end, _, added) => {
                     data.insert(start - 1, added.to_vec());
                 }
                 _ => {}
@@ -31,13 +37,20 @@ impl EdPatch {
     }
 }
 
+/// A hunk in an ed patch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EdHunk {
+    /// Add lines.
     Add(usize, usize, Vec<u8>),
+
+    /// Remove lines.
     Remove(usize, usize, Vec<u8>),
+
+    /// Change lines
     Change(usize, usize, Vec<u8>, Vec<u8>),
 }
 
+/// Parse a hunk header.
 pub fn parse_hunk_header(line: &[u8]) -> Option<(char, usize, usize)> {
     let cap = lazy_regex::BytesRegex::new("(\\d+)([adc])(\\d+)\n")
         .unwrap()
@@ -75,6 +88,7 @@ mod parse_hunk_header_tests {
     }
 }
 
+/// Parse a line in a hunk.
 pub fn parse_hunk_line<'a>(prefix: &[u8], line: &'a [u8]) -> Option<&'a [u8]> {
     if line.starts_with(prefix) {
         Some(&line[prefix.len()..])
@@ -84,6 +98,7 @@ pub fn parse_hunk_line<'a>(prefix: &[u8], line: &'a [u8]) -> Option<&'a [u8]> {
 }
 
 impl EdPatch {
+    /// Parse a patch in the ed format.
     pub fn parse_patch(patch: &[u8]) -> Result<EdPatch, Vec<u8>> {
         let mut hunks = Vec::new();
         let mut lines = crate::parse::splitlines(patch);

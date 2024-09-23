@@ -1,10 +1,19 @@
+//! Parsing of patches
 use crate::patch::{BinaryPatch, Hunk, HunkLine, Patch, UnifiedPatch};
 
+/// Errors that can occur while parsing a patch
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
+    /// The files are binary and differ
     BinaryFiles(Vec<u8>, Vec<u8>),
+
+    /// A syntax error in the patch
     PatchSyntax(&'static str, Vec<u8>),
+
+    /// A malformed patch header
     MalformedPatchHeader(&'static str, Vec<u8>),
+
+    /// A malformed hunk header
     MalformedHunkHeader(String, Vec<u8>),
 }
 
@@ -84,6 +93,7 @@ mod splitlines_tests {
     }
 }
 
+/// The string that indicates that a line has no newline
 pub const NO_NL: &[u8] = b"\\ No newline at end of file\n";
 
 /// Iterate through a series of lines, ensuring that lines
@@ -138,6 +148,7 @@ static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> =
         lazy_regex::BytesRegex::new(r"^Binary files (.+) and (.+) differ").unwrap()
     });
 
+/// Get the names of the files in a patch
 pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
     iter_lines: &mut T,
 ) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
@@ -218,6 +229,10 @@ mod get_patch_names_tests {
     }
 }
 
+/// Iterate over the hunks in a patch
+///
+/// # Arguments
+/// * `iter_lines`: Iterator over lines
 pub fn iter_hunks<'a, I>(iter_lines: &mut I) -> impl Iterator<Item = Result<Hunk, Error>> + '_
 where
     I: Iterator<Item = &'a [u8]>,
@@ -309,6 +324,10 @@ mod iter_hunks_tests {
     }
 }
 
+/// Parse a patch file
+///
+/// # Arguments
+/// * `iter_lines`: Iterator over lines
 pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Box<dyn Patch>, Error>
 where
     I: Iterator<Item = &'a [u8]> + 'a,
@@ -358,6 +377,7 @@ mod patches_tests {
     test_patch!(test_patch_7, "orig-7", "mod-7", "diff-7");
 }
 
+/// Conflict applying a patch
 #[derive(Debug)]
 pub struct PatchConflict {
     line_no: usize,
@@ -565,10 +585,14 @@ pub fn difference_index(atext: &[u8], btext: &[u8]) -> Option<usize> {
     (0..length).find(|&i| atext[i] != btext[i])
 }
 
+/// Parse a patch file
 #[derive(PartialEq, Eq)]
 pub enum FileEntry {
+    /// Non-patch data
     Junk(Vec<Vec<u8>>),
+    /// A meta entry
     Meta(Vec<u8>),
+    /// A patch entry
     Patch(Vec<Vec<u8>>),
 }
 
