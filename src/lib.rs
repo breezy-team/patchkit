@@ -4,8 +4,9 @@
 //! # Examples
 //!
 //! ```
-//! use patchkit::parse::parse_patch;
-//! use patchkit::patch::{Patch as _, UnifiedPatch, Hunk, HunkLine};
+//! use patchkit::ContentPatch;
+//! use patchkit::unified::parse_patch;
+//! use patchkit::unified::{UnifiedPatch, Hunk, HunkLine};
 //!
 //! let patch = UnifiedPatch::parse_patch(vec![
 //!     "--- a/file1\n",
@@ -40,15 +41,53 @@
 //! ```
 
 pub mod ed;
-pub mod parse;
-pub mod patch;
 pub mod quilt;
 pub mod timestamp;
+pub mod unified;
 
-// TODO: Return a Path instead of a PathBuf
 /// Strip the specified number of path components from the beginning of the path.
-pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> std::path::PathBuf {
-    path.components().skip(prefix).collect()
+pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> &std::path::Path {
+    let mut components = path.components();
+    for _ in 0..prefix {
+        components.next();
+    }
+    std::path::Path::new(components.as_path())
+}
+
+/// Error that occurs when applying a patch
+#[derive(Debug)]
+pub enum ApplyError {
+    /// A conflict occurred
+    Conflict(String),
+
+    /// The patch is unapplyable
+    Unapplyable,
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Conflict(reason) => write!(f, "Conflict: {}", reason),
+            Self::Unapplyable => write!(f, "Patch unapplyable"),
+        }
+    }
+}
+
+impl std::error::Error for ApplyError {}
+
+/// A patch to a single file
+pub trait SingleFilePatch: ContentPatch {
+    /// Old file name
+    fn oldname(&self) -> &[u8];
+
+    /// New file name
+    fn newname(&self) -> &[u8];
+}
+
+/// A patch that can be applied to file content
+pub trait ContentPatch {
+    /// Apply this patch to a file
+    fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, ApplyError>;
 }
 
 #[test]
