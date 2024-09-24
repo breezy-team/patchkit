@@ -10,7 +10,9 @@ pub struct EdPatch {
 impl crate::ContentPatch for EdPatch {
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
         let lines = splitlines(orig).collect::<Vec<_>>();
-        let result = self.apply(&lines).map_err(|e| crate::ApplyError::Conflict(e))?;
+        let result = self
+            .apply(&lines)
+            .map_err(|e| crate::ApplyError::Conflict(e))?;
         Ok(result)
     }
 }
@@ -21,8 +23,7 @@ impl EdPatch {
         let mut data = data.to_vec();
         for hunk in &self.hunks {
             match hunk {
-                EdHunk::Remove(start, end, expected)
-                | EdHunk::Change(start, end, expected, _) => {
+                EdHunk::Remove(start, end, expected) | EdHunk::Change(start, end, expected, _) => {
                     assert_eq!(start, end);
                     let existing = match data.get(start - 1) {
                         Some(existing) => existing,

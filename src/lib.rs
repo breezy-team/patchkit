@@ -41,9 +41,9 @@
 //! ```
 
 pub mod ed;
-pub mod unified;
 pub mod quilt;
 pub mod timestamp;
+pub mod unified;
 
 /// Strip the specified number of path components from the beginning of the path.
 pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> &std::path::Path {
@@ -53,7 +53,6 @@ pub fn strip_prefix(path: &std::path::Path, prefix: usize) -> &std::path::Path {
     }
     std::path::Path::new(components.as_path())
 }
-
 
 /// Error that occurs when applying a patch
 #[derive(Debug)]

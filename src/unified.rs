@@ -507,8 +507,7 @@ mod iter_exact_patched_from_hunks_tests {
             b"line 4\n".to_vec(),
         ];
         let mut hunk = Hunk::new(1, 1, 1, 1, None);
-        hunk.lines
-            .push(HunkLine::ContextLine(b"line 1\n".to_vec()));
+        hunk.lines.push(HunkLine::ContextLine(b"line 1\n".to_vec()));
         let hunks = vec![hunk];
         let result =
             super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter())
@@ -534,10 +533,8 @@ mod iter_exact_patched_from_hunks_tests {
             b"line 4\n".to_vec(),
         ];
         let mut hunk = Hunk::new(1, 0, 1, 1, None);
-        hunk.lines
-            .push(HunkLine::InsertLine(b"line 0\n".to_vec()));
-        hunk.lines
-            .push(HunkLine::ContextLine(b"line 1\n".to_vec()));
+        hunk.lines.push(HunkLine::InsertLine(b"line 0\n".to_vec()));
+        hunk.lines.push(HunkLine::ContextLine(b"line 1\n".to_vec()));
         let hunks = vec![hunk];
         let result =
             super::iter_exact_patched_from_hunks(orig_lines.into_iter(), hunks.into_iter())
@@ -971,11 +968,10 @@ impl UnifiedPatch {
     {
         let mut iter_lines = iter_lines_handle_nl(iter_lines);
 
-        let ((orig_name, orig_ts), (mod_name, mod_ts)) =
-            match get_patch_names(&mut iter_lines) {
-                Ok(names) => names,
-                Err(e) => return Err(e),
-            };
+        let ((orig_name, orig_ts), (mod_name, mod_ts)) = match get_patch_names(&mut iter_lines) {
+            Ok(names) => names,
+            Err(e) => return Err(e),
+        };
 
         let mut patch = Self::new(orig_name, orig_ts, mod_name, mod_ts);
         for hunk in iter_hunks(&mut iter_lines) {
@@ -1024,10 +1020,9 @@ impl crate::ContentPatch for UnifiedPatch {
     /// Apply this patch to a file
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
         let orig_lines = splitlines(orig).map(|l| l.to_vec());
-        let lines =
-            iter_exact_patched_from_hunks(orig_lines, self.hunks.clone().into_iter())
-                .collect::<Result<Vec<Vec<u8>>, PatchConflict>>()
-                .map_err(|e| crate::ApplyError::Conflict(e.to_string()))?;
+        let lines = iter_exact_patched_from_hunks(orig_lines, self.hunks.clone().into_iter())
+            .collect::<Result<Vec<Vec<u8>>, PatchConflict>>()
+            .map_err(|e| crate::ApplyError::Conflict(e.to_string()))?;
         Ok(lines.concat())
     }
 }
