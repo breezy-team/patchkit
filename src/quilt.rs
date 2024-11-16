@@ -266,6 +266,28 @@ impl QuiltPatch {
     pub fn as_bytes(&self) -> &[u8] {
         &self.patch
     }
+
+    /// Get the name of the patch
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the patch options
+    pub fn options(&self) -> &[String] {
+        &self.options
+    }
+
+    /// Get the patch contents
+    pub fn parse(&self) -> Result<Vec<crate::unified::UnifiedPatch>, crate::unified::Error> {
+        let lines = self.patch.split(|&b| b == b'\n');
+        crate::unified::parse_patches(lines.map(|x| x.to_vec()))
+            .filter_map(|patch| match patch {
+                Ok(crate::unified::PlainOrBinaryPatch::Plain(patch)) => Some(Ok(patch)),
+                Ok(crate::unified::PlainOrBinaryPatch::Binary(_)) => None,
+                Err(err) => Some(Err(err)),
+            })
+            .collect()
+    }
 }
 
 /// Read quilt patches from a directory.
@@ -287,7 +309,6 @@ pub fn iter_quilt_patches(directory: &std::path::Path) -> impl Iterator<Item = Q
             };
             let p = directory.join(patch);
             let lines = std::fs::read_to_string(p).unwrap();
-            // TODO(jelmer): Pass on options?
             Some(QuiltPatch {
                 name: patch.to_string(),
                 patch: lines.into_bytes(),
