@@ -1,0 +1,3 @@
+[codespell]
+skip = ./test_patches_data/*
+ignore-words-list = crate
