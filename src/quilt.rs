@@ -87,7 +87,7 @@ mod find_common_patch_suffix_tests {
 }
 
 /// A entry in a series file
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SeriesEntry {
     /// A patch entry
     Patch {
@@ -214,6 +214,19 @@ impl Series {
 
         Ok(())
     }
+
+    /// Get an iterator over the entries in the series file
+    pub fn iter(&self) -> std::slice::Iter<SeriesEntry> {
+        self.entries.iter()
+    }
+}
+
+impl std::ops::Index<usize> for Series {
+    type Output = SeriesEntry;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.entries[index]
+    }
 }
 
 impl Default for Series {
@@ -234,4 +247,199 @@ pub fn read_quilt_series<R: std::io::Read>(mut reader: R) -> std::path::PathBuf 
     let mut s = String::new();
     reader.read_to_string(&mut s).unwrap();
     s.into()
+}
+
+/// A quilt patch
+pub struct QuiltPatch {
+    /// The name of the patch
+    pub name: String,
+
+    /// The options for the patch
+    pub options: Vec<String>,
+
+    /// The patch contents
+    pub patch: Vec<u8>,
+}
+
+impl QuiltPatch {
+    /// Get the patch contents as a byte slice
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.patch
+    }
+
+    /// Get the name of the patch
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the patch options
+    pub fn options(&self) -> &[String] {
+        &self.options
+    }
+
+    /// Get the patch contents
+    pub fn parse(&self) -> Result<Vec<crate::unified::UnifiedPatch>, crate::unified::Error> {
+        let lines = self.patch.split(|&b| b == b'\n');
+        crate::unified::parse_patches(lines.map(|x| x.to_vec()))
+            .filter_map(|patch| match patch {
+                Ok(crate::unified::PlainOrBinaryPatch::Plain(patch)) => Some(Ok(patch)),
+                Ok(crate::unified::PlainOrBinaryPatch::Binary(_)) => None,
+                Err(err) => Some(Err(err)),
+            })
+            .collect()
+    }
+}
+
+/// Read quilt patches from a directory.
+pub fn iter_quilt_patches(directory: &std::path::Path) -> impl Iterator<Item = QuiltPatch> + '_ {
+    let series_path = directory.join("series");
+
+    let series = if series_path.exists() {
+        Series::read(std::fs::File::open(series_path).unwrap()).unwrap()
+    } else {
+        Series::new()
+    };
+
+    series
+        .iter()
+        .filter_map(move |entry| {
+            let (patch, options) = match entry {
+                SeriesEntry::Patch { name, options } => (name, options),
+                SeriesEntry::Comment(_) => return None,
+            };
+            let p = directory.join(patch);
+            let lines = std::fs::read_to_string(p).unwrap();
+            Some(QuiltPatch {
+                name: patch.to_string(),
+                patch: lines.into_bytes(),
+                options: options.clone(),
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_series_read() {
+        let series = Series::read(
+            r#"0001-foo.patch
+# This is a comment
+0002-bar.patch --reverse
+0003-baz.patch --reverse --fuzz=3
+"#
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(series.len(), 3);
+        assert_eq!(
+            series[0],
+            SeriesEntry::Patch {
+                name: "0001-foo.patch".to_string(),
+                options: vec![]
+            }
+        );
+        assert_eq!(
+            series[1],
+            SeriesEntry::Comment("# This is a comment".to_string())
+        );
+        assert_eq!(
+            series[2],
+            SeriesEntry::Patch {
+                name: "0002-bar.patch".to_string(),
+                options: vec!["--reverse".to_string()]
+            }
+        );
+        assert_eq!(
+            series[3],
+            SeriesEntry::Patch {
+                name: "0003-baz.patch".to_string(),
+                options: vec!["--reverse".to_string(), "--fuzz=3".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn test_series_write() {
+        let mut series = Series::new();
+        series.append("0001-foo.patch", None);
+        series.append("0002-bar.patch", Some(&["--reverse".to_string()]));
+        series.append(
+            "0003-baz.patch",
+            Some(&["--reverse".to_string(), "--fuzz=3".to_string()]),
+        );
+
+        let mut writer = vec![];
+        series.write(&mut writer).unwrap();
+        let series = String::from_utf8(writer).unwrap();
+        assert_eq!(
+            series,
+            "0001-foo.patch\n0002-bar.patch --reverse\n0003-baz.patch --reverse --fuzz=3\n"
+        );
+    }
+
+    #[test]
+    fn test_series_remove() {
+        let mut series = Series::new();
+        series.append("0001-foo.patch", None);
+        series.append("0002-bar.patch", Some(&["--reverse".to_string()]));
+        series.append(
+            "0003-baz.patch",
+            Some(&["--reverse".to_string(), "--fuzz=3".to_string()]),
+        );
+
+        series.remove("0002-bar.patch");
+
+        let mut writer = vec![];
+        series.write(&mut writer).unwrap();
+        let series = String::from_utf8(writer).unwrap();
+        assert_eq!(
+            series,
+            "0001-foo.patch\n0003-baz.patch --reverse --fuzz=3\n"
+        );
+    }
+
+    #[test]
+    fn test_series_contains() {
+        let mut series = Series::new();
+        series.append("0001-foo.patch", None);
+        series.append("0002-bar.patch", Some(&["--reverse".to_string()]));
+        series.append(
+            "0003-baz.patch",
+            Some(&["--reverse".to_string(), "--fuzz=3".to_string()]),
+        );
+
+        assert!(series.contains("0002-bar.patch"));
+        assert!(!series.contains("0004-qux.patch"));
+    }
+
+    #[test]
+    fn test_series_patches() {
+        let mut series = Series::new();
+        series.append("0001-foo.patch", None);
+        series.append("0002-bar.patch", Some(&["--reverse".to_string()]));
+        series.append(
+            "0003-baz.patch",
+            Some(&["--reverse".to_string(), "--fuzz=3".to_string()]),
+        );
+
+        let patches: Vec<_> = series.patches().collect();
+        assert_eq!(
+            patches,
+            &["0001-foo.patch", "0002-bar.patch", "0003-baz.patch"]
+        );
+    }
+
+    #[test]
+    fn test_series_is_empty() {
+        let series = Series::new();
+        assert!(series.is_empty());
+
+        let mut series = Series::new();
+        series.append("0001-foo.patch", None);
+        assert!(!series.is_empty());
+    }
 }

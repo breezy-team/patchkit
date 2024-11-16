@@ -1,4 +1,5 @@
 //! Parsing of unified patches
+use crate::{ContentPatch, SingleFilePatch};
 use regex::bytes::Regex;
 use std::num::ParseIntError;
 
@@ -330,7 +331,7 @@ mod iter_hunks_tests {
 ///
 /// # Arguments
 /// * `iter_lines`: Iterator over lines
-pub fn parse_patch<'a, I>(iter_lines: I) -> Result<Box<dyn crate::SingleFilePatch>, Error>
+pub fn parse_patch<'a, I>(iter_lines: I) -> Result<PlainOrBinaryPatch, Error>
 where
     I: Iterator<Item = &'a [u8]> + 'a,
 {
@@ -339,7 +340,7 @@ where
     let ((orig_name, orig_ts), (mod_name, mod_ts)) = match get_patch_names(&mut iter_lines) {
         Ok(names) => names,
         Err(Error::BinaryFiles(orig_name, mod_name)) => {
-            return Ok(Box::new(BinaryPatch(orig_name, mod_name)));
+            return Ok(PlainOrBinaryPatch::Binary(BinaryPatch(orig_name, mod_name)));
         }
         Err(e) => return Err(e),
     };
@@ -348,11 +349,12 @@ where
     for hunk in iter_hunks(&mut iter_lines) {
         patch.hunks.push(hunk?);
     }
-    Ok(Box::new(patch))
+    Ok(PlainOrBinaryPatch::Plain(patch))
 }
 
 #[cfg(test)]
 mod patches_tests {
+    use super::*;
     macro_rules! test_patch {
         ($name:ident, $orig:expr, $mod:expr, $patch:expr) => {
             #[test]
@@ -826,25 +828,57 @@ mod iter_file_patch_tests {
     }
 }
 
+/// A patch that can be applied to a single file
+pub enum PlainOrBinaryPatch {
+    /// A unified patch
+    Plain(UnifiedPatch),
+
+    /// An indication that two binary files differ
+    Binary(BinaryPatch),
+}
+
+impl SingleFilePatch for PlainOrBinaryPatch {
+    fn oldname(&self) -> &[u8] {
+        match self {
+            Self::Plain(patch) => patch.orig_name.as_slice(),
+            Self::Binary(patch) => patch.0.as_slice(),
+        }
+    }
+
+    fn newname(&self) -> &[u8] {
+        match self {
+            Self::Plain(patch) => patch.mod_name.as_slice(),
+            Self::Binary(patch) => patch.1.as_slice(),
+        }
+    }
+}
+
+impl crate::ContentPatch for PlainOrBinaryPatch {
+    fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
+        match self {
+            Self::Plain(patch) => patch.apply_exact(orig),
+            Self::Binary(_) => Err(crate::ApplyError::Unapplyable),
+        }
+    }
+}
+
 /// Parse a patch file
 ///
 /// # Arguments
 /// * `iter`: Iterator over lines
-pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn crate::SingleFilePatch>>, Error>
+pub fn parse_patches<I>(iter: I) -> impl Iterator<Item = Result<PlainOrBinaryPatch, Error>>
 where
     I: Iterator<Item = Vec<u8>>,
 {
-    iter_file_patch(iter)
-        .filter_map(|entry| match entry {
-            Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice())) {
-                Ok(patch) => Some(Ok(patch)),
-                Err(e) => Some(Err(e)),
-            },
-            Ok(FileEntry::Junk(_)) => None,
-            Ok(FileEntry::Meta(_)) => None,
+    iter_file_patch(iter).filter_map(|entry| match entry {
+        Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice())) {
+            Ok(patch) => Some(Ok(patch)),
             Err(e) => Some(Err(e)),
-        })
-        .collect()
+        },
+        Ok(FileEntry::Junk(_)) => None,
+        Ok(FileEntry::Meta(_)) => None,
+        Err(e) => Some(Err(e)),
+    })
 }
 
 #[cfg(test)]
@@ -860,7 +894,8 @@ mod parse_patches_tests {
             " # <aaron.bentley@utoronto.ca>\n",
             " #\n",
         ];
-        let patches = super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).unwrap();
+        let patches =
+            super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).collect::<Vec<_>>();
         assert_eq!(patches.len(), 1);
     }
 }
@@ -869,7 +904,7 @@ mod parse_patches_tests {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryPatch(pub Vec<u8>, pub Vec<u8>);
 
-impl crate::SingleFilePatch for BinaryPatch {
+impl SingleFilePatch for BinaryPatch {
     fn oldname(&self) -> &[u8] {
         &self.0
     }
@@ -984,7 +1019,7 @@ impl UnifiedPatch {
     ///
     /// # Arguments
     /// * `iter`: Iterator over lines
-    pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn crate::SingleFilePatch>>, Error>
+    pub fn parse_patches<I>(iter: I) -> Result<Vec<PlainOrBinaryPatch>, Error>
     where
         I: Iterator<Item = Vec<u8>>,
     {
@@ -992,19 +1027,22 @@ impl UnifiedPatch {
             .filter_map(|entry| match entry {
                 Ok(FileEntry::Patch(lines)) => {
                     match Self::parse_patch(lines.iter().map(|l| l.as_slice())) {
-                        Ok(patch) => Some(Ok(Box::new(patch) as Box<dyn crate::SingleFilePatch>)),
+                        Ok(patch) => Some(Ok(PlainOrBinaryPatch::Plain(patch))),
                         Err(e) => Some(Err(e)),
                     }
                 }
                 Ok(FileEntry::Junk(_)) => None,
                 Ok(FileEntry::Meta(_)) => None,
+                Err(Error::BinaryFiles(orig_name, mod_name)) => Some(Ok(
+                    PlainOrBinaryPatch::Binary(BinaryPatch(orig_name, mod_name)),
+                )),
                 Err(e) => Some(Err(e)),
             })
             .collect()
     }
 }
 
-impl crate::SingleFilePatch for UnifiedPatch {
+impl SingleFilePatch for UnifiedPatch {
     /// Old file name
     fn oldname(&self) -> &[u8] {
         &self.orig_name
@@ -1016,7 +1054,7 @@ impl crate::SingleFilePatch for UnifiedPatch {
     }
 }
 
-impl crate::ContentPatch for UnifiedPatch {
+impl ContentPatch for UnifiedPatch {
     /// Apply this patch to a file
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
         let orig_lines = splitlines(orig).map(|l| l.to_vec());
