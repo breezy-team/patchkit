@@ -830,21 +830,21 @@ mod iter_file_patch_tests {
 ///
 /// # Arguments
 /// * `iter`: Iterator over lines
-pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn crate::SingleFilePatch>>, Error>
+pub fn parse_patches<I>(
+    iter: I,
+) -> impl Iterator<Item = Result<Box<dyn crate::SingleFilePatch>, Error>>
 where
     I: Iterator<Item = Vec<u8>>,
 {
-    iter_file_patch(iter)
-        .filter_map(|entry| match entry {
-            Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice())) {
-                Ok(patch) => Some(Ok(patch)),
-                Err(e) => Some(Err(e)),
-            },
-            Ok(FileEntry::Junk(_)) => None,
-            Ok(FileEntry::Meta(_)) => None,
+    iter_file_patch(iter).filter_map(|entry| match entry {
+        Ok(FileEntry::Patch(lines)) => match parse_patch(lines.iter().map(|l| l.as_slice())) {
+            Ok(patch) => Some(Ok(patch)),
             Err(e) => Some(Err(e)),
-        })
-        .collect()
+        },
+        Ok(FileEntry::Junk(_)) => None,
+        Ok(FileEntry::Meta(_)) => None,
+        Err(e) => Some(Err(e)),
+    })
 }
 
 #[cfg(test)]
@@ -860,7 +860,8 @@ mod parse_patches_tests {
             " # <aaron.bentley@utoronto.ca>\n",
             " #\n",
         ];
-        let patches = super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).unwrap();
+        let patches =
+            super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).collect::<Vec<_>>();
         assert_eq!(patches.len(), 1);
     }
 }
@@ -984,7 +985,7 @@ impl UnifiedPatch {
     ///
     /// # Arguments
     /// * `iter`: Iterator over lines
-    pub fn parse_patches<'a, I>(iter: I) -> Result<Vec<Box<dyn crate::SingleFilePatch>>, Error>
+    pub fn parse_patches<I>(iter: I) -> Result<Vec<Box<dyn crate::SingleFilePatch>>, Error>
     where
         I: Iterator<Item = Vec<u8>>,
     {
