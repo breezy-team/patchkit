@@ -23,14 +23,29 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::BinaryFiles(oldname, newname) => {
-                write!(f, "Binary files {:?} and {:?} differ", oldname, newname)
+                write!(
+                    f,
+                    "Binary files {} and {} differ",
+                    String::from_utf8_lossy(oldname),
+                    String::from_utf8_lossy(newname)
+                )
             }
             Self::PatchSyntax(msg, line) => write!(f, "Patch syntax error: {} in {:?}", msg, line),
             Self::MalformedPatchHeader(msg, line) => {
-                write!(f, "Malformed patch header: {} in {:?}", msg, line)
+                write!(
+                    f,
+                    "Malformed patch header: {} in {}",
+                    msg,
+                    String::from_utf8_lossy(line)
+                )
             }
             Self::MalformedHunkHeader(msg, line) => {
-                write!(f, "Malformed hunk header: {} in {:?}", msg, line)
+                write!(
+                    f,
+                    "Malformed hunk header: {} in {}",
+                    msg,
+                    String::from_utf8_lossy(line)
+                )
             }
         }
     }
@@ -1231,7 +1246,12 @@ pub struct MalformedHunkHeader(pub &'static str, pub Vec<u8>);
 
 impl std::fmt::Display for MalformedHunkHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Malformed hunk header: {}: {:?}", self.0, self.1)
+        write!(
+            f,
+            "Malformed hunk header: {}: {}",
+            self.0,
+            String::from_utf8_lossy(&self.1)
+        )
     }
 }
 
@@ -1280,7 +1300,7 @@ impl Hunk {
 
     /// Parse a hunk header
     pub fn from_header(line: &[u8]) -> Result<Self, MalformedHunkHeader> {
-        let re = Regex::new(r"\@\@ ([^@]*) \@\@( (.*))?\n").unwrap();
+        let re = lazy_regex::regex!(r"\@\@ ([^@]*) \@\@( (.*))?\n"B);
         let captures = re
             .captures(line)
             .ok_or_else(|| MalformedHunkHeader("Does not match format.", line.to_vec()))?;

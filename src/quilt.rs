@@ -279,7 +279,7 @@ impl QuiltPatch {
 
     /// Get the patch contents
     pub fn parse(&self) -> Result<Vec<crate::unified::UnifiedPatch>, crate::unified::Error> {
-        let lines = self.patch.split(|&b| b == b'\n');
+        let lines = self.patch.split_inclusive(|&b| b == b'\n');
         crate::unified::parse_patches(lines.map(|x| x.to_vec()))
             .filter_map(|patch| match patch {
                 Ok(crate::unified::PlainOrBinaryPatch::Plain(patch)) => Some(Ok(patch)),
@@ -441,5 +441,39 @@ mod tests {
         let mut series = Series::new();
         series.append("0001-foo.patch", None);
         assert!(!series.is_empty());
+    }
+
+    #[test]
+    fn test_quilt_patch_parse() {
+        let patch = QuiltPatch {
+            name: "0001-foo.patch".to_string(),
+            options: vec![],
+            patch: b"--- a/foo\n+++ b/foo\n@@ -1,3 +1,3 @@\n foo\n bar\n-bar\n+bar\n".to_vec(),
+        };
+
+        let patches = patch.parse().unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0],
+            crate::unified::UnifiedPatch {
+                orig_name: b"a/foo".to_vec(),
+                mod_name: b"b/foo".to_vec(),
+                orig_ts: None,
+                mod_ts: None,
+                hunks: vec![crate::unified::Hunk {
+                    orig_pos: 1,
+                    orig_range: 3,
+                    mod_pos: 1,
+                    mod_range: 3,
+                    lines: vec![
+                        crate::unified::HunkLine::ContextLine(b"foo\n".to_vec()),
+                        crate::unified::HunkLine::ContextLine(b"bar\n".to_vec()),
+                        crate::unified::HunkLine::RemoveLine(b"bar\n".to_vec()),
+                        crate::unified::HunkLine::InsertLine(b"bar\n".to_vec())
+                    ],
+                    tail: None
+                }]
+            }
+        );
     }
 }
