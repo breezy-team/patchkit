@@ -214,6 +214,11 @@ impl Series {
 
         Ok(())
     }
+
+    /// Get an iterator over the entries in the series file
+    pub fn iter(&self) -> std::slice::Iter<SeriesEntry> {
+        self.entries.iter()
+    }
 }
 
 impl std::ops::Index<usize> for Series {
@@ -242,6 +247,55 @@ pub fn read_quilt_series<R: std::io::Read>(mut reader: R) -> std::path::PathBuf 
     let mut s = String::new();
     reader.read_to_string(&mut s).unwrap();
     s.into()
+}
+
+/// A quilt patch
+pub struct QuiltPatch {
+    /// The name of the patch
+    pub name: String,
+
+    /// The options for the patch
+    pub options: Vec<String>,
+
+    /// The patch contents
+    pub patch: Vec<u8>,
+}
+
+impl QuiltPatch {
+    /// Get the patch contents as a byte slice
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.patch
+    }
+}
+
+/// Read quilt patches from a directory.
+pub fn iter_quilt_patches(directory: &std::path::Path) -> impl Iterator<Item = QuiltPatch> + '_ {
+    let series_path = directory.join("series");
+
+    let series = if series_path.exists() {
+        Series::read(std::fs::File::open(series_path).unwrap()).unwrap()
+    } else {
+        Series::new()
+    };
+
+    series
+        .iter()
+        .filter_map(move |entry| {
+            let (patch, options) = match entry {
+                SeriesEntry::Patch { name, options } => (name, options),
+                SeriesEntry::Comment(_) => return None,
+            };
+            let p = directory.join(patch);
+            let lines = std::fs::read_to_string(p).unwrap();
+            // TODO(jelmer): Pass on options?
+            Some(QuiltPatch {
+                name: patch.to_string(),
+                patch: lines.into_bytes(),
+                options: options.clone(),
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 #[cfg(test)]
