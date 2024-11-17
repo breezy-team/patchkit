@@ -1,6 +1,5 @@
 //! Parsing of unified patches
 use crate::{ContentPatch, SingleFilePatch};
-use regex::bytes::Regex;
 use std::num::ParseIntError;
 
 /// Errors that can occur while parsing a patch

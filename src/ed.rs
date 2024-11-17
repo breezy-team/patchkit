@@ -12,7 +12,7 @@ impl crate::ContentPatch for EdPatch {
         let lines = splitlines(orig).collect::<Vec<_>>();
         let result = self
             .apply(&lines)
-            .map_err(|e| crate::ApplyError::Conflict(e))?;
+            .map_err(crate::ApplyError::Conflict)?;
         Ok(result)
     }
 }
@@ -27,7 +27,7 @@ impl EdPatch {
                     assert_eq!(start, end);
                     let existing = match data.get(start - 1) {
                         Some(existing) => existing,
-                        None => return Err(format!("line {} does not exist", start).into()),
+                        None => return Err(format!("line {} does not exist", start)),
                     };
                     if existing != expected {
                         return Err(format!(
