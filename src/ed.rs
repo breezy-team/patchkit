@@ -10,9 +10,7 @@ pub struct EdPatch {
 impl crate::ContentPatch for EdPatch {
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
         let lines = splitlines(orig).collect::<Vec<_>>();
-        let result = self
-            .apply(&lines)
-            .map_err(crate::ApplyError::Conflict)?;
+        let result = self.apply(&lines).map_err(crate::ApplyError::Conflict)?;
         Ok(result)
     }
 }
