@@ -41,6 +41,10 @@
 //! ```
 
 pub mod ed;
+/// Module for lossless parsing and editing of patch files
+pub mod edit;
+/// Generic parse result wrapper for lossless parsing
+pub mod parse;
 pub mod quilt;
 pub mod timestamp;
 pub mod unified;
