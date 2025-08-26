@@ -9,13 +9,13 @@ pub enum Error {
     BinaryFiles(Vec<u8>, Vec<u8>),
 
     /// A syntax error in the patch
-    PatchSyntax(&'static str, Vec<u8>),
+    PatchSyntax(&'static str, Box<[u8]>),
 
     /// A malformed patch header
-    MalformedPatchHeader(&'static str, Vec<u8>),
+    MalformedPatchHeader(&'static str, Box<[u8]>),
 
     /// A malformed hunk header
-    MalformedHunkHeader(String, Vec<u8>),
+    MalformedHunkHeader(String, Box<[u8]>),
 }
 
 impl std::fmt::Display for Error {
@@ -29,13 +29,15 @@ impl std::fmt::Display for Error {
                     String::from_utf8_lossy(newname)
                 )
             }
-            Self::PatchSyntax(msg, line) => write!(f, "Patch syntax error: {} in {:?}", msg, line),
+            Self::PatchSyntax(msg, line) => {
+                write!(f, "Patch syntax error: {} in {:?}", msg, &**line)
+            }
             Self::MalformedPatchHeader(msg, line) => {
                 write!(
                     f,
                     "Malformed patch header: {} in {}",
                     msg,
-                    String::from_utf8_lossy(line)
+                    String::from_utf8_lossy(&**line)
                 )
             }
             Self::MalformedHunkHeader(msg, line) => {
@@ -43,7 +45,7 @@ impl std::fmt::Display for Error {
                     f,
                     "Malformed hunk header: {} in {}",
                     msg,
-                    String::from_utf8_lossy(line)
+                    String::from_utf8_lossy(&**line)
                 )
             }
         }
@@ -170,41 +172,72 @@ pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
 ) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
     let line = iter_lines
         .next()
-        .ok_or_else(|| Error::PatchSyntax("No input", vec![]))?;
+        .ok_or_else(|| Error::PatchSyntax("No input", vec![].into()))?;
 
     if let Some(captures) = BINARY_FILES_RE.captures(line) {
-        let orig_name = captures.get(1).unwrap().as_bytes().to_vec();
-        let mod_name = captures.get(2).unwrap().as_bytes().to_vec();
+        let orig_name = captures
+            .get(1)
+            .expect("Regex match guarantees group 1 exists")
+            .as_bytes()
+            .to_vec();
+        let mod_name = captures
+            .get(2)
+            .expect("Regex match guarantees group 2 exists")
+            .as_bytes()
+            .to_vec();
         return Err(Error::BinaryFiles(orig_name, mod_name));
     }
     let orig_name = line
         .strip_prefix(b"--- ")
-        .ok_or_else(|| Error::MalformedPatchHeader("No orig name", line.to_vec()))?
+        .ok_or_else(|| {
+            Error::MalformedPatchHeader("No orig name", line.to_vec().into_boxed_slice())
+        })?
         .strip_suffix(b"\n")
-        .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec()))?;
-    let (orig_name, orig_ts) = match orig_name.split(|&c| c == b'\t').collect::<Vec<_>>()[..] {
-        [name, ts] => (name.to_vec(), Some(ts.to_vec())),
-        [name] => (name.to_vec(), None),
-        _ => return Err(Error::MalformedPatchHeader("No orig line", line.to_vec())),
+        .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec().into_boxed_slice()))?;
+
+    // Avoid collecting into Vec, use iterator directly
+    let mut parts = orig_name.split(|&c| c == b'\t');
+    let (orig_name, orig_ts) = match (parts.next(), parts.next()) {
+        (Some(name), Some(ts)) => (name.to_vec(), Some(ts.to_vec())),
+        (Some(name), None) => (name.to_vec(), None),
+        _ => {
+            return Err(Error::MalformedPatchHeader(
+                "No orig line",
+                line.to_vec().into_boxed_slice(),
+            ))
+        }
     };
 
     let line = iter_lines
         .next()
-        .ok_or_else(|| Error::PatchSyntax("No input", vec![]))?;
+        .ok_or_else(|| Error::PatchSyntax("No input", vec![].into()))?;
 
     let (mod_name, mod_ts) = match line.strip_prefix(b"+++ ") {
         Some(line) => {
-            let mod_name = line
-                .strip_suffix(b"\n")
-                .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec()))?;
-            let (mod_name, mod_ts) = match mod_name.split(|&c| c == b'\t').collect::<Vec<_>>()[..] {
-                [name, ts] => (name.to_vec(), Some(ts.to_vec())),
-                [name] => (name.to_vec(), None),
-                _ => return Err(Error::PatchSyntax("Invalid mod name", line.to_vec())),
+            let mod_name = line.strip_suffix(b"\n").ok_or_else(|| {
+                Error::PatchSyntax("missing newline", line.to_vec().into_boxed_slice())
+            })?;
+
+            // Avoid collecting into Vec, use iterator directly
+            let mut parts = mod_name.split(|&c| c == b'\t');
+            let (mod_name, mod_ts) = match (parts.next(), parts.next()) {
+                (Some(name), Some(ts)) => (name.to_vec(), Some(ts.to_vec())),
+                (Some(name), None) => (name.to_vec(), None),
+                _ => {
+                    return Err(Error::PatchSyntax(
+                        "Invalid mod name",
+                        line.to_vec().into_boxed_slice(),
+                    ))
+                }
             };
             (mod_name, mod_ts)
         }
-        None => return Err(Error::MalformedPatchHeader("No mod line", line.to_vec())),
+        None => {
+            return Err(Error::MalformedPatchHeader(
+                "No mod line",
+                line.to_vec().into_boxed_slice(),
+            ))
+        }
     };
 
     Ok(((orig_name, orig_ts), (mod_name, mod_ts)))
@@ -268,7 +301,7 @@ where
                             Err(_) => {
                                 return Some(Err(Error::PatchSyntax(
                                     "Invalid hunk line",
-                                    line.to_vec(),
+                                    line.to_vec().into_boxed_slice(),
                                 )));
                             }
                             Ok(hunk_line) => {
@@ -291,7 +324,10 @@ where
                     return Some(Ok(new_hunk));
                 }
                 Err(MalformedHunkHeader(m, l)) => {
-                    return Some(Err(Error::MalformedHunkHeader(m.to_string(), l)));
+                    return Some(Err(Error::MalformedHunkHeader(
+                        m.to_string(),
+                        l.into_boxed_slice(),
+                    )));
                 }
             }
         }
@@ -715,7 +751,10 @@ where
                 let hunk = match Hunk::from_header(line.as_slice()) {
                     Ok(hunk) => hunk,
                     Err(e) => {
-                        return Some(Err(Error::MalformedHunkHeader(e.to_string(), line.clone())));
+                        return Some(Err(Error::MalformedHunkHeader(
+                            e.to_string(),
+                            line.clone().into_boxed_slice(),
+                        )));
                     }
                 };
                 self.orig_range = hunk.orig_range;
@@ -973,34 +1012,30 @@ impl UnifiedPatch {
     /// Serialize this patch to a byte vector
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        self.write(&mut bytes).unwrap();
+        self.write(&mut bytes)
+            .expect("Writing to Vec<u8> should never fail");
         bytes
     }
 
     /// Write this patch to a writer
     pub fn write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
-        w.write_all(
-            &format!(
-                "--- {}{}\n",
-                String::from_utf8_lossy(&self.orig_name),
-                match &self.orig_ts {
-                    Some(ts) => format!("\t{}", String::from_utf8_lossy(ts)),
-                    None => "".to_string(),
-                }
-            )
-            .into_bytes(),
-        )?;
-        w.write_all(
-            &format!(
-                "+++ {}{}\n",
-                String::from_utf8_lossy(&self.mod_name),
-                match &self.mod_ts {
-                    Some(ts) => format!("\t{}", String::from_utf8_lossy(ts)),
-                    None => "".to_string(),
-                }
-            )
-            .into_bytes(),
-        )?;
+        // Write orig line more efficiently
+        w.write_all(b"--- ")?;
+        w.write_all(&self.orig_name)?;
+        if let Some(ts) = &self.orig_ts {
+            w.write_all(b"\t")?;
+            w.write_all(ts)?;
+        }
+        w.write_all(b"\n")?;
+
+        // Write mod line more efficiently
+        w.write_all(b"+++ ")?;
+        w.write_all(&self.mod_name)?;
+        if let Some(ts) = &self.mod_ts {
+            w.write_all(b"\t")?;
+            w.write_all(ts)?;
+        }
+        w.write_all(b"\n")?;
         for hunk in &self.hunks {
             hunk.write(w)?;
         }
@@ -1072,7 +1107,7 @@ impl ContentPatch for UnifiedPatch {
     /// Apply this patch to a file
     fn apply_exact(&self, orig: &[u8]) -> Result<Vec<u8>, crate::ApplyError> {
         let orig_lines = splitlines(orig).map(|l| l.to_vec());
-        let lines = iter_exact_patched_from_hunks(orig_lines, self.hunks.clone().into_iter())
+        let lines = iter_exact_patched_from_hunks(orig_lines, self.hunks.iter().cloned())
             .collect::<Result<Vec<Vec<u8>>, PatchConflict>>()
             .map_err(|e| crate::ApplyError::Conflict(e.to_string()))?;
         Ok(lines.concat())
@@ -1149,12 +1184,21 @@ impl HunkLine {
     pub fn as_bytes(&self) -> Vec<u8> {
         let leadchar = self.char();
         let contents = self.contents();
-        let terminator = if !contents.ends_with(&b"\n"[..]) {
-            [b"\n".to_vec(), NO_NL.to_vec()].concat()
-        } else {
-            b"".to_vec()
-        };
-        [vec![leadchar], contents.to_vec(), terminator].concat()
+
+        // Pre-calculate capacity to avoid reallocations
+        let needs_nl_marker = !contents.ends_with(b"\n");
+        let capacity = 1 + contents.len() + if needs_nl_marker { 1 + NO_NL.len() } else { 0 };
+
+        let mut result = Vec::with_capacity(capacity);
+        result.push(leadchar);
+        result.extend_from_slice(contents);
+
+        if needs_nl_marker {
+            result.push(b'\n');
+            result.extend_from_slice(NO_NL);
+        }
+
+        result
     }
 
     /// Parse a hunk line
@@ -1329,17 +1373,28 @@ impl Hunk {
 
     /// Get the header of this hunk
     pub fn get_header(&self) -> Vec<u8> {
-        let tail_str = match &self.tail {
-            Some(tail) => [b" ".to_vec(), tail.to_vec()].concat(),
-            None => Vec::new(),
-        };
-        format!(
-            "@@ -{} +{} @@{}\n",
-            self.range_str(self.orig_pos, self.orig_range),
-            self.range_str(self.mod_pos, self.mod_range),
-            String::from_utf8_lossy(&tail_str),
-        )
-        .into_bytes()
+        let orig_range = self.range_str(self.orig_pos, self.orig_range);
+        let mod_range = self.range_str(self.mod_pos, self.mod_range);
+
+        // Pre-calculate capacity to minimize allocations
+        let mut capacity =
+            "@@ -".len() + orig_range.len() + " +".len() + mod_range.len() + " @@".len() + 1; // +1 for newline
+        if let Some(tail) = &self.tail {
+            capacity += 1 + tail.len(); // +1 for space
+        }
+
+        let mut result = Vec::with_capacity(capacity);
+        result.extend_from_slice(b"@@ -");
+        result.extend_from_slice(orig_range.as_bytes());
+        result.extend_from_slice(b" +");
+        result.extend_from_slice(mod_range.as_bytes());
+        result.extend_from_slice(b" @@");
+        if let Some(tail) = &self.tail {
+            result.push(b' ');
+            result.extend_from_slice(tail);
+        }
+        result.push(b'\n');
+        result
     }
 
     fn range_str(&self, pos: usize, range: usize) -> String {
@@ -1362,7 +1417,8 @@ impl Hunk {
     /// Serialize this hunk to a byte vector
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        self.write(&mut bytes).unwrap();
+        self.write(&mut bytes)
+            .expect("Writing to Vec<u8> should never fail");
         bytes
     }
 
