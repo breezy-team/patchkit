@@ -3,6 +3,8 @@ pub mod lex;
 /// Lossless AST structures for patch files
 pub mod lossless;
 mod parse;
+/// Lossless editor for quilt series files
+pub mod quilt;
 
 pub use lossless::{
     // Common types
