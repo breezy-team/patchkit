@@ -216,7 +216,7 @@ impl Series {
     }
 
     /// Get an iterator over the entries in the series file
-    pub fn iter(&self) -> std::slice::Iter<'_, SeriesEntry> {
+    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, SeriesEntry> {
         self.entries.iter()
     }
 }
