@@ -24,3 +24,9 @@ jobs:
         RUSTFLAGS: -Dwarnings
     - name: Check formatting
       run: cargo fmt -- --check
+    - name: Install cargo-hack and cargo-minimal-versions
+      run: |
+        cargo install cargo-hack
+        cargo install cargo-minimal-versions
+    - name: Test with minimal versions
+      run: cargo minimal-versions test
