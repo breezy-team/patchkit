@@ -296,7 +296,22 @@ where
                     let mut orig_size = 0;
                     let mut mod_size = 0;
                     while orig_size < new_hunk.orig_range || mod_size < new_hunk.mod_range {
-                        let line = iter_lines.next()?;
+                        let line = match iter_lines.next() {
+                            Some(line) => line,
+                            None => {
+                                // Truncated hunk body: the header
+                                // promised more lines than the input
+                                // provides. Surface this as an
+                                // error — silently dropping the
+                                // partial hunk masks both malformed
+                                // patches and miscounted ranges
+                                // upstream.
+                                return Some(Err(Error::PatchSyntax(
+                                    "Truncated hunk body",
+                                    Vec::new().into_boxed_slice(),
+                                )));
+                            }
+                        };
                         match HunkLine::parse_line(line) {
                             Err(_) => {
                                 return Some(Err(Error::PatchSyntax(
@@ -374,6 +389,35 @@ mod iter_hunks_tests {
         ]);
 
         assert_eq!(&expected_hunk, hunks.first().unwrap());
+    }
+
+    /// Regression: a hunk header that promises more body lines than
+    /// the input contains used to silently terminate iteration with
+    /// no error and no recorded hunk. That made it impossible for
+    /// callers to distinguish "valid empty input" from "truncated
+    /// patch". Now it must surface as `PatchSyntax`.
+    #[test]
+    fn test_iter_hunks_truncated_body_is_error() {
+        // Header promises 2 orig + 2 mod lines, but only 2 body
+        // lines (-foo, +bar) are present — orig_size and mod_size
+        // each reach 1, never 2.
+        let mut lines = super::splitlines(b"@@ -1,2 +1,2 @@\n-foo\n+bar\n");
+        let result: Result<Vec<Hunk>, Error> = super::iter_hunks(&mut lines).collect();
+        match result {
+            Err(Error::PatchSyntax(msg, _)) => {
+                assert_eq!(msg, "Truncated hunk body");
+            }
+            other => panic!("expected Err(PatchSyntax), got {:?}", other),
+        }
+    }
+
+    /// Companion: an EOF immediately after the hunk header (no body
+    /// at all) is also a truncation.
+    #[test]
+    fn test_iter_hunks_no_body_is_error() {
+        let mut lines = super::splitlines(b"@@ -1,1 +1,1 @@\n");
+        let result: Result<Vec<Hunk>, Error> = super::iter_hunks(&mut lines).collect();
+        assert!(matches!(result, Err(Error::PatchSyntax(_, _))));
     }
 }
 
