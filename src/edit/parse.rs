@@ -243,7 +243,7 @@ impl<'a> Parser<'a> {
 
             // Continue parsing lines that might belong to this invalid hunk
             // until we find another hunk or file boundary
-            while !self.at_end() && !self.is_hunk_end() {
+            while !self.at_end() && !self.is_hunk_boundary() {
                 self.skip_to_next_line();
             }
             return;
@@ -364,11 +364,38 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn is_hunk_end(&self) -> bool {
-        // Check if we're at the start of a new hunk or file
+    /// Returns true at a hunk or file boundary (`@@`, `---`, `+++`).
+    /// Used for recovery loops that want to skip until the next known marker.
+    fn is_hunk_boundary(&self) -> bool {
         (self.at(SyntaxKind::AT) && self.peek_text(0) == Some("@@"))
             || (self.at(SyntaxKind::MINUS) && self.peek_text(0) == Some("---"))
             || (self.at(SyntaxKind::PLUS) && self.peek_text(0) == Some("+++"))
+    }
+
+    /// Returns true when the current token can no longer be part of a
+    /// unified hunk body. A valid body line must start with one of:
+    ///   ' '  (context)
+    ///   '+'  (addition)         — but `+++` is a new-file header
+    ///   '-'  (deletion)         — but `---` is an old-file header
+    ///   '\\' (e.g. "\ No newline at end of file")
+    ///   '\n' (an empty line, treated as empty context)
+    /// Anything else — `diff --git`, `index`, `Binary files`, free text,
+    /// etc. — means the hunk body has ended. Without this stricter check,
+    /// surrounding metadata gets silently absorbed into the previous hunk
+    /// as context lines, inflating its line counts.
+    fn is_hunk_end(&self) -> bool {
+        match self.current_kind() {
+            Some(SyntaxKind::AT) if self.peek_text(0) == Some("@@") => true,
+            Some(SyntaxKind::MINUS) if self.peek_text(0) == Some("---") => true,
+            Some(SyntaxKind::PLUS) if self.peek_text(0) == Some("+++") => true,
+            Some(SyntaxKind::SPACE)
+            | Some(SyntaxKind::PLUS)
+            | Some(SyntaxKind::MINUS)
+            | Some(SyntaxKind::BACKSLASH)
+            | Some(SyntaxKind::NEWLINE) => false,
+            None => true,
+            _ => true,
+        }
     }
 
     fn current_kind(&self) -> Option<SyntaxKind> {
