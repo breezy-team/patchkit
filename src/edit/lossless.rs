@@ -732,6 +732,49 @@ mod tests {
     }
 
     #[test]
+    fn test_hunk_does_not_absorb_next_file_metadata() {
+        // git diff puts `diff --git` and `index` lines between files. The
+        // parser must not absorb them as context lines of the previous hunk
+        // — that would inflate the hunk's line counts and produce spurious
+        // hunk-line-count-mismatch diagnostics.
+        let text = "\
+diff --git a/f1 b/f1
+index aaa..bbb 100644
+--- a/f1
++++ b/f1
+@@ -1,2 +1,3 @@
+ ctx1
++add1
+ ctx2
+diff --git a/f2 b/f2
+index ccc..ddd 100644
+--- a/f2
++++ b/f2
+@@ -1,1 +1,1 @@
+-old
++new
+";
+        let parsed = parse(text);
+        let patch = parsed.tree();
+        let files: Vec<_> = patch.patch_files().collect();
+        assert_eq!(files.len(), 2);
+
+        let hunk1 = files[0].hunks().next().unwrap();
+        let stats1 = hunk1.stats();
+        assert_eq!(stats1.context, 2);
+        assert_eq!(stats1.additions, 1);
+        assert_eq!(stats1.deletions, 0);
+        assert_eq!(hunk1.header().unwrap().check_counts(&hunk1), vec![]);
+
+        let hunk2 = files[1].hunks().next().unwrap();
+        let stats2 = hunk2.stats();
+        assert_eq!(stats2.context, 0);
+        assert_eq!(stats2.additions, 1);
+        assert_eq!(stats2.deletions, 1);
+        assert_eq!(hunk2.header().unwrap().check_counts(&hunk2), vec![]);
+    }
+
+    #[test]
     fn test_check_counts_mismatch() {
         let text = "--- a/f\n+++ b/f\n@@ -1,99 +1,99 @@\n ctx\n-old\n+new\n";
         let parsed = parse(text);
