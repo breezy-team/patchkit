@@ -798,6 +798,24 @@ index ccc..ddd 100644
     }
 
     #[test]
+    fn test_path_with_special_characters() {
+        // Filenames legitimately contain `-`, `+`, `@`, `,` etc. The lexer
+        // emits each as its own token; the path parser must include them.
+        let text = "\
+--- a/foo-bar+baz@1.0,v
++++ b/foo-bar+baz@1.0,v
+@@ -1 +1 @@
+-old
++new
+";
+        let parsed = parse(text);
+        let patch = parsed.tree();
+        let file = patch.patch_files().next().unwrap();
+        assert_eq!(file.old_path().as_deref(), Some("a/foo-bar+baz@1.0,v"));
+        assert_eq!(file.new_path().as_deref(), Some("b/foo-bar+baz@1.0,v"));
+    }
+
+    #[test]
     fn test_check_counts_mismatch() {
         let text = "--- a/f\n+++ b/f\n@@ -1,99 +1,99 @@\n ctx\n-old\n+new\n";
         let parsed = parse(text);
