@@ -775,6 +775,29 @@ index ccc..ddd 100644
     }
 
     #[test]
+    fn test_hunk_does_not_absorb_trailing_blank_line() {
+        // A bare newline at end of file (no leading space, +, or -) is not
+        // a valid hunk body line. It must terminate the hunk rather than
+        // be counted as an extra context line.
+        let text = "\
+--- a/f
++++ b/f
+@@ -1,1 +1,2 @@
+ ctx
++add
+
+";
+        let parsed = parse(text);
+        let patch = parsed.tree();
+        let hunk = patch.patch_files().next().unwrap().hunks().next().unwrap();
+        let stats = hunk.stats();
+        assert_eq!(stats.context, 1);
+        assert_eq!(stats.additions, 1);
+        assert_eq!(stats.deletions, 0);
+        assert_eq!(hunk.header().unwrap().check_counts(&hunk), vec![]);
+    }
+
+    #[test]
     fn test_check_counts_mismatch() {
         let text = "--- a/f\n+++ b/f\n@@ -1,99 +1,99 @@\n ctx\n-old\n+new\n";
         let parsed = parse(text);

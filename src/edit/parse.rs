@@ -378,11 +378,10 @@ impl<'a> Parser<'a> {
     ///   '+'  (addition)         — but `+++` is a new-file header
     ///   '-'  (deletion)         — but `---` is an old-file header
     ///   '\\' (e.g. "\ No newline at end of file")
-    ///   '\n' (an empty line, treated as empty context)
-    /// Anything else — `diff --git`, `index`, `Binary files`, free text,
-    /// etc. — means the hunk body has ended. Without this stricter check,
-    /// surrounding metadata gets silently absorbed into the previous hunk
-    /// as context lines, inflating its line counts.
+    /// Anything else — `diff --git`, `index`, `Binary files`, blank lines
+    /// at EOF, free text — means the hunk body has ended. Without this
+    /// stricter check, surrounding metadata gets silently absorbed into
+    /// the previous hunk as context lines, inflating its line counts.
     fn is_hunk_end(&self) -> bool {
         match self.current_kind() {
             Some(SyntaxKind::AT) if self.peek_text(0) == Some("@@") => true,
@@ -391,8 +390,7 @@ impl<'a> Parser<'a> {
             Some(SyntaxKind::SPACE)
             | Some(SyntaxKind::PLUS)
             | Some(SyntaxKind::MINUS)
-            | Some(SyntaxKind::BACKSLASH)
-            | Some(SyntaxKind::NEWLINE) => false,
+            | Some(SyntaxKind::BACKSLASH) => false,
             None => true,
             _ => true,
         }
