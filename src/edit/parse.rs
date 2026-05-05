@@ -103,48 +103,9 @@ impl<'a> Parser<'a> {
         self.advance(); // -
         self.advance(); // -
 
-        // Skip whitespace
         self.skip_whitespace();
-
-        // Parse path - collect all tokens that make up the path
-        let mut path_parts = Vec::new();
-        let mut collecting_path = true;
-        while !self.at(SyntaxKind::NEWLINE) && !self.at_end() && collecting_path {
-            match self.current_kind() {
-                Some(SyntaxKind::TEXT)
-                | Some(SyntaxKind::SLASH)
-                | Some(SyntaxKind::DOT)
-                | Some(SyntaxKind::NUMBER)
-                | Some(SyntaxKind::COLON)
-                | Some(SyntaxKind::BACKSLASH) => {
-                    if let Some(text) = self.current_text() {
-                        path_parts.push(text.to_string());
-                    }
-                    self.advance_without_emit();
-                }
-                Some(SyntaxKind::WHITESPACE) if !path_parts.is_empty() => {
-                    // Stop at whitespace after we've collected some path parts (timestamp follows)
-                    collecting_path = false;
-                }
-                _ => {
-                    collecting_path = false;
-                }
-            }
-        }
-
-        if !path_parts.is_empty() {
-            let path = path_parts.join("");
-            self.builder.token(SyntaxKind::PATH.into(), &path);
-        }
-
-        // Skip to end of line
-        while !self.at(SyntaxKind::NEWLINE) && !self.at_end() {
-            self.advance();
-        }
-
-        if self.at(SyntaxKind::NEWLINE) {
-            self.advance();
-        }
+        self.parse_file_path();
+        self.skip_to_eol();
 
         self.builder.finish_node();
     }
@@ -157,48 +118,9 @@ impl<'a> Parser<'a> {
         self.advance(); // +
         self.advance(); // +
 
-        // Skip whitespace
         self.skip_whitespace();
-
-        // Parse path - collect all tokens that make up the path
-        let mut path_parts = Vec::new();
-        let mut collecting_path = true;
-        while !self.at(SyntaxKind::NEWLINE) && !self.at_end() && collecting_path {
-            match self.current_kind() {
-                Some(SyntaxKind::TEXT)
-                | Some(SyntaxKind::SLASH)
-                | Some(SyntaxKind::DOT)
-                | Some(SyntaxKind::NUMBER)
-                | Some(SyntaxKind::COLON)
-                | Some(SyntaxKind::BACKSLASH) => {
-                    if let Some(text) = self.current_text() {
-                        path_parts.push(text.to_string());
-                    }
-                    self.advance_without_emit();
-                }
-                Some(SyntaxKind::WHITESPACE) if !path_parts.is_empty() => {
-                    // Stop at whitespace after we've collected some path parts (timestamp follows)
-                    collecting_path = false;
-                }
-                _ => {
-                    collecting_path = false;
-                }
-            }
-        }
-
-        if !path_parts.is_empty() {
-            let path = path_parts.join("");
-            self.builder.token(SyntaxKind::PATH.into(), &path);
-        }
-
-        // Skip to end of line
-        while !self.at(SyntaxKind::NEWLINE) && !self.at_end() {
-            self.advance();
-        }
-
-        if self.at(SyntaxKind::NEWLINE) {
-            self.advance();
-        }
+        self.parse_file_path();
+        self.skip_to_eol();
 
         self.builder.finish_node();
     }
@@ -905,36 +827,28 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
+    /// Emit a single PATH token for the file path on a header line.
+    ///
+    /// The path runs from the current position to the next whitespace (which
+    /// separates it from an optional timestamp) or to end of line. Filenames
+    /// legitimately contain `-`, `+`, `@`, `,`, etc.; the lexer emits those
+    /// as their own token kinds, so we stitch any non-whitespace tokens back
+    /// together rather than maintaining an accept-list per character.
     fn parse_file_path(&mut self) {
-        let mut path_parts = Vec::new();
-        let mut collecting_path = true;
-
-        while !self.at(SyntaxKind::NEWLINE) && !self.at_end() && collecting_path {
+        let mut path = String::new();
+        while !self.at_end() {
             match self.current_kind() {
-                Some(SyntaxKind::TEXT)
-                | Some(SyntaxKind::SLASH)
-                | Some(SyntaxKind::DOT)
-                | Some(SyntaxKind::NUMBER)
-                | Some(SyntaxKind::MINUS)
-                | Some(SyntaxKind::STAR)
-                | Some(SyntaxKind::COLON)
-                | Some(SyntaxKind::BACKSLASH) => {
+                Some(SyntaxKind::WHITESPACE) | Some(SyntaxKind::NEWLINE) | None => break,
+                Some(_) => {
                     if let Some(text) = self.current_text() {
-                        path_parts.push(text.to_string());
+                        path.push_str(text);
                     }
                     self.advance_without_emit();
-                }
-                Some(SyntaxKind::WHITESPACE) if !path_parts.is_empty() => {
-                    collecting_path = false;
-                }
-                _ => {
-                    collecting_path = false;
                 }
             }
         }
 
-        if !path_parts.is_empty() {
-            let path = path_parts.join("");
+        if !path.is_empty() {
             self.builder.token(SyntaxKind::PATH.into(), &path);
         }
     }
