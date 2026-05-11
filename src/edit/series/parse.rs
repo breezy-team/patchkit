@@ -1,7 +1,7 @@
 //! Parser for quilt series files
 use crate::edit::series::lex::{Lexer, SyntaxKind};
 use crate::edit::series::lossless::SeriesFile;
-use crate::edit::PositionedParseError;
+use crate::edit::{PositionedParseError, PositionedParseWarning};
 use rowan::{GreenNode, GreenNodeBuilder, TextSize};
 
 /// Parse a quilt series file into a lossless AST
@@ -10,9 +10,15 @@ pub fn parse_series(text: &str) -> crate::edit::Parse<SeriesFile> {
     let tokens = lexer.tokenize();
     let parser = Parser::new(&tokens);
 
-    let (green, errors, positioned_errors) = parser.parse();
+    let (green, errors, positioned_errors, warnings, positioned_warnings) = parser.parse();
 
-    crate::edit::Parse::new_with_positioned_errors(green, errors, positioned_errors)
+    crate::edit::Parse::new_with_positioned_errors(
+        green,
+        errors,
+        positioned_errors,
+        warnings,
+        positioned_warnings,
+    )
 }
 
 struct Parser<'a> {
@@ -21,6 +27,8 @@ struct Parser<'a> {
     builder: GreenNodeBuilder<'static>,
     errors: Vec<String>,
     positioned_errors: Vec<PositionedParseError>,
+    warnings: Vec<String>,
+    positioned_warnings: Vec<PositionedParseWarning>,
     text_pos: TextSize,
 }
 
@@ -32,11 +40,21 @@ impl<'a> Parser<'a> {
             builder: GreenNodeBuilder::new(),
             errors: Vec::new(),
             positioned_errors: Vec::new(),
+            warnings: Vec::new(),
+            positioned_warnings: Vec::new(),
             text_pos: TextSize::from(0),
         }
     }
 
-    fn parse(mut self) -> (GreenNode, Vec<String>, Vec<PositionedParseError>) {
+    fn parse(
+        mut self,
+    ) -> (
+        GreenNode,
+        Vec<String>,
+        Vec<PositionedParseError>,
+        Vec<String>,
+        Vec<PositionedParseWarning>,
+    ) {
         self.builder.start_node(SyntaxKind::ROOT.into());
 
         while !self.at_end() {
@@ -50,7 +68,13 @@ impl<'a> Parser<'a> {
         }
 
         self.builder.finish_node();
-        (self.builder.finish(), self.errors, self.positioned_errors)
+        (
+            self.builder.finish(),
+            self.errors,
+            self.positioned_errors,
+            self.warnings,
+            self.positioned_warnings,
+        )
     }
 
     fn parse_entry(&mut self) {
@@ -197,6 +221,15 @@ impl<'a> Parser<'a> {
         self.errors.push(message.to_string());
         let pos = self.text_pos;
         self.positioned_errors.push(PositionedParseError {
+            message: message.to_string(),
+            position: rowan::TextRange::new(pos, pos),
+        });
+    }
+
+    fn warning(&mut self, message: &str) {
+        self.warnings.push(message.to_string());
+        let pos = self.text_pos;
+        self.positioned_warnings.push(PositionedParseWarning {
             message: message.to_string(),
             position: rowan::TextRange::new(pos, pos),
         });

@@ -35,7 +35,7 @@ pub enum DiffFormat {
     Normal,
 }
 
-pub use super::{ParseError, PositionedParseError};
+pub use super::{ParseError, ParseWarning, PositionedParseError, PositionedParseWarning};
 
 macro_rules! ast_node {
     ($name:ident, $kind:expr) => {

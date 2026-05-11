@@ -1,5 +1,5 @@
 use super::lex::SyntaxKind;
-use super::lossless::{Patch, PositionedParseError};
+use super::lossless::{Patch, PositionedParseError, PositionedParseWarning};
 use rowan::{GreenNodeBuilder, TextSize};
 
 pub(crate) struct Parser<'a> {
@@ -8,6 +8,8 @@ pub(crate) struct Parser<'a> {
     builder: GreenNodeBuilder<'static>,
     errors: Vec<String>,
     positioned_errors: Vec<PositionedParseError>,
+    warnings: Vec<String>,
+    positioned_warnings: Vec<PositionedParseWarning>,
     text_position: TextSize,
 }
 
@@ -20,6 +22,8 @@ impl<'a> Parser<'a> {
             builder: GreenNodeBuilder::new(),
             errors: Vec::new(),
             positioned_errors: Vec::new(),
+            warnings: Vec::new(),
+            positioned_warnings: Vec::new(),
             text_position: TextSize::from(0),
         }
     }
@@ -30,7 +34,13 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
 
         let green = self.builder.finish();
-        super::Parse::new_with_positioned_errors(green, self.errors, self.positioned_errors)
+        super::Parse::new_with_positioned_errors(
+            green,
+            self.errors,
+            self.positioned_errors,
+            self.warnings,
+            self.positioned_warnings,
+        )
     }
 
     fn parse_patch(&mut self) {
