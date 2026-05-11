@@ -239,19 +239,29 @@ impl<'a> Parser<'a> {
 
     fn error(&mut self, message: &str) {
         self.errors.push(message.to_string());
-        let pos = self.text_pos;
+        let start = self.text_pos;
+        let len = self
+            .tokens
+            .get(self.pos)
+            .map(|(_, text)| TextSize::of(*text))
+            .unwrap_or(TextSize::from(0));
         self.positioned_errors.push(PositionedParseError {
             message: message.to_string(),
-            position: rowan::TextRange::new(pos, pos),
+            position: rowan::TextRange::new(start, start + len),
         });
     }
 
     fn warning(&mut self, message: &str) {
         self.warnings.push(message.to_string());
-        let pos = self.text_pos;
+        let start = self.text_pos;
+        let len = self
+            .tokens
+            .get(self.pos)
+            .map(|(_, text)| TextSize::of(*text))
+            .unwrap_or(TextSize::from(0));
         self.positioned_warnings.push(PositionedParseWarning {
             message: message.to_string(),
-            position: rowan::TextRange::new(pos, pos),
+            position: rowan::TextRange::new(start, start + len),
         });
     }
 }
