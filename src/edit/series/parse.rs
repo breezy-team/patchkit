@@ -3,6 +3,7 @@ use crate::edit::series::lex::{Lexer, SyntaxKind};
 use crate::edit::series::lossless::SeriesFile;
 use crate::edit::{PositionedParseError, PositionedParseWarning};
 use rowan::{GreenNode, GreenNodeBuilder, TextSize};
+use std::collections::HashSet;
 
 /// Parse a quilt series file into a lossless AST
 pub fn parse_series(text: &str) -> crate::edit::Parse<SeriesFile> {
@@ -30,6 +31,7 @@ struct Parser<'a> {
     warnings: Vec<String>,
     positioned_warnings: Vec<PositionedParseWarning>,
     text_pos: TextSize,
+    seen_patches: HashSet<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -43,6 +45,7 @@ impl<'a> Parser<'a> {
             warnings: Vec::new(),
             positioned_warnings: Vec::new(),
             text_pos: TextSize::from(0),
+            seen_patches: HashSet::new(),
         }
     }
 
@@ -133,6 +136,15 @@ impl<'a> Parser<'a> {
 
     fn parse_patch_entry(&mut self) {
         self.builder.start_node(SyntaxKind::PATCH_ENTRY.into());
+
+        if let Some((_, name)) = self.tokens.get(self.pos) {
+            let name = name.to_string();
+            if self.seen_patches.contains(&name) {
+                self.warning(&format!("Duplicate patch: {}", name));
+            } else {
+                self.seen_patches.insert(name);
+            }
+        }
 
         // Consume patch name
         self.expect(SyntaxKind::PATCH_NAME);
@@ -300,5 +312,20 @@ mod tests {
 
         // Note: Parse<SeriesFile> is not currently Send+Sync due to rowan implementation
         // but the green node itself can be cloned and shared
+    }
+
+    #[test]
+    fn test_duplicate_patch_warning() {
+        let parse = parse_series("patch1.patch\npatch1.patch\n");
+        assert!(parse.errors().is_empty());
+        assert_eq!(parse.warnings().len(), 1);
+        assert!(parse.warnings()[0].contains("Duplicate patch"));
+    }
+
+    #[test]
+    fn test_multiple_duplicates() {
+        let parse = parse_series("patch1.patch\npatch2.patch\npatch1.patch\npatch2.patch\n");
+        assert!(parse.errors().is_empty());
+        assert_eq!(parse.warnings().len(), 2);
     }
 }
