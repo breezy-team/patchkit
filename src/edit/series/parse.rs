@@ -154,6 +154,14 @@ impl<'a> Parser<'a> {
             self.parse_options();
         }
 
+        // Check for unexpected patch name
+        while self.current_kind() != Some(SyntaxKind::NEWLINE) && !self.at_end() {
+            if let Some((SyntaxKind::PATCH_NAME, name)) = self.tokens.get(self.pos) {
+                self.error(&format!("Unexpected patch name: '{}' ", name));
+            }
+            self.consume();
+        }
+
         // Consume newline
         if self.current_kind() == Some(SyntaxKind::NEWLINE) {
             self.consume();
@@ -327,5 +335,19 @@ mod tests {
         let parse = parse_series("patch1.patch\npatch2.patch\npatch1.patch\npatch2.patch\n");
         assert!(parse.errors().is_empty());
         assert_eq!(parse.warnings().len(), 2);
+    }
+
+    #[test]
+    fn test_unexpected_patch() {
+        let parse = parse_series("patch1.patch patch2.patch\n");
+        assert_eq!(parse.errors().len(), 1);
+        assert!(parse.errors()[0].contains("Unexpected patch name"));
+    }
+
+    #[test]
+    fn test_multiple_unexpected_patch() {
+        let parse = parse_series("patch1.patch patch2.patch patch3.patch patch4.patch\n");
+        assert_eq!(parse.errors().len(), 3);
+        assert!(parse.errors()[0].contains("Unexpected patch name"));
     }
 }
