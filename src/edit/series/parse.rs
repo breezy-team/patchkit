@@ -137,13 +137,17 @@ impl<'a> Parser<'a> {
     fn parse_patch_entry(&mut self) {
         self.builder.start_node(SyntaxKind::PATCH_ENTRY.into());
 
-        if let Some((_, name)) = self.tokens.get(self.pos) {
-            let name = name.to_string();
-            if self.seen_patches.contains(&name) {
-                self.warning(&format!("Duplicate patch: {}", name));
-            } else {
-                self.seen_patches.insert(name);
-            }
+        let patch_name = self
+            .tokens
+            .get(self.pos)
+            .map(|(_, name)| *name)
+            .unwrap_or("");
+
+        let name = patch_name.to_string();
+        if self.seen_patches.contains(&name) {
+            self.warning(&format!("Duplicate patch: {}", name));
+        } else {
+            self.seen_patches.insert(name);
         }
 
         // Consume patch name
@@ -151,7 +155,7 @@ impl<'a> Parser<'a> {
 
         // Parse options if present
         if self.has_options_ahead() {
-            self.parse_options();
+            self.parse_options(patch_name);
         }
 
         // Check for unexpected patch name
@@ -170,7 +174,7 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn parse_options(&mut self) {
+    fn parse_options(&mut self, patch_name: &str) {
         self.builder.start_node(SyntaxKind::OPTIONS.into());
 
         while self.current_kind() == Some(SyntaxKind::SPACE)
@@ -189,10 +193,20 @@ impl<'a> Parser<'a> {
                             "Option '{}' is ignored by dpkg-source",
                             option_name
                         ));
+                    } else {
+                        let count = patch_name.split('/').count() - 1;
+                        if let Some(strip_level) = option_name.strip_prefix("-p") {
+                            if let Ok(level) = strip_level.parse::<u32>() {
+                                if level > count as u32 {
+                                    self.warning(&format!("Invalid strip level"));
+                                }
+                            }
+                        }
                     }
                 }
 
                 self.consume();
+
                 self.builder.finish_node();
             } else {
                 self.consume();
@@ -386,5 +400,12 @@ mod tests {
         let parse = parse_series("patch1.patch -aa\npatch2.patch -bb\n");
         assert_eq!(parse.warnings().len(), 2);
         assert!(parse.warnings()[1].contains("ignored by dpkg-source"));
+    }
+
+    #[test]
+    fn test_invalid_strip_level() {
+        let parse = parse_series("patch1.patch -p1\npatch/patch2.patch -p2\n");
+        assert_eq!(parse.warnings().len(), 2);
+        assert!(parse.warnings()[0].contains("Invalid strip level"));
     }
 }
