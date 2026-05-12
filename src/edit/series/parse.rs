@@ -179,6 +179,19 @@ impl<'a> Parser<'a> {
         {
             if self.current_kind() == Some(SyntaxKind::OPTION) {
                 self.builder.start_node(SyntaxKind::OPTION_ITEM.into());
+
+                if let Some((_, option_name)) = self.tokens.get(self.pos) {
+                    if !(option_name.starts_with("-p")
+                        && option_name.len() > 2
+                        && option_name[2..].chars().all(|c| c.is_ascii_digit()))
+                    {
+                        self.warning(&format!(
+                            "Option '{}' is ignored by dpkg-source",
+                            option_name
+                        ));
+                    }
+                }
+
                 self.consume();
                 self.builder.finish_node();
             } else {
@@ -359,5 +372,19 @@ mod tests {
         let parse = parse_series("patch1.patch patch2.patch patch3.patch patch4.patch\n");
         assert_eq!(parse.errors().len(), 3);
         assert!(parse.errors()[0].contains("Unexpected patch name"));
+    }
+
+    #[test]
+    fn test_invalid_option() {
+        let parse = parse_series("patch1.patch -aa\n");
+        assert_eq!(parse.warnings().len(), 1);
+        assert!(parse.warnings()[0].contains("ignored by dpkg-source"));
+    }
+
+    #[test]
+    fn test_multiple_invalid_option() {
+        let parse = parse_series("patch1.patch -aa\npatch2.patch -bb\n");
+        assert_eq!(parse.warnings().len(), 2);
+        assert!(parse.warnings()[1].contains("ignored by dpkg-source"));
     }
 }
