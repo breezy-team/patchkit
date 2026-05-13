@@ -75,6 +75,22 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Parse warning containing a list of warning messages
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParseWarning(pub Vec<String>);
+
+impl fmt::Display for ParseWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, err) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{}", err)?;
+        }
+        Ok(())
+    }
+}
+
 /// Parse error with position information
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionedParseError {
@@ -84,12 +100,23 @@ pub struct PositionedParseError {
     pub position: rowan::TextRange,
 }
 
+/// Parse warning with position information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionedParseWarning {
+    /// The warning message
+    pub message: String,
+    /// The position in the source text where the warning occurred
+    pub position: rowan::TextRange,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Parse result containing a syntax tree and any parse errors
 pub struct Parse<T> {
     green: GreenNode,
     errors: Vec<String>,
     positioned_errors: Vec<PositionedParseError>,
+    warnings: Vec<String>,
+    positioned_warnings: Vec<PositionedParseWarning>,
     _ty: PhantomData<T>,
 }
 
@@ -100,11 +127,13 @@ unsafe impl<T> Sync for Parse<T> {}
 
 impl<T> Parse<T> {
     /// Create a new parse result
-    pub fn new(green: GreenNode, errors: Vec<String>) -> Self {
+    pub fn new(green: GreenNode, errors: Vec<String>, warnings: Vec<String>) -> Self {
         Parse {
             green,
             errors,
             positioned_errors: Vec::new(),
+            warnings,
+            positioned_warnings: Vec::new(),
             _ty: PhantomData,
         }
     }
@@ -114,11 +143,15 @@ impl<T> Parse<T> {
         green: GreenNode,
         errors: Vec<String>,
         positioned_errors: Vec<PositionedParseError>,
+        warnings: Vec<String>,
+        positioned_warnings: Vec<PositionedParseWarning>,
     ) -> Self {
         Parse {
             green,
             errors,
             positioned_errors,
+            warnings,
+            positioned_warnings,
             _ty: PhantomData,
         }
     }
@@ -138,9 +171,27 @@ impl<T> Parse<T> {
         &self.positioned_errors
     }
 
+    /// Get the syntax warnings
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Get parse warnings with position information
+    pub fn positioned_warnings(&self) -> &[PositionedParseWarning] {
+        &self.positioned_warnings
+    }
+
     /// Get parse errors as strings
     pub fn error_messages(&self) -> Vec<String> {
         self.positioned_errors
+            .iter()
+            .map(|e| e.message.clone())
+            .collect()
+    }
+
+    /// Get parse warnings as strings
+    pub fn warning_messages(&self) -> Vec<String> {
+        self.positioned_warnings
             .iter()
             .map(|e| e.message.clone())
             .collect()
@@ -199,6 +250,8 @@ impl<T> Parse<T> {
             green: self.green,
             errors: self.errors,
             positioned_errors: self.positioned_errors,
+            warnings: self.warnings,
+            positioned_warnings: self.positioned_warnings,
             _ty: PhantomData,
         })
     }
@@ -323,12 +376,37 @@ impl<T> Parse<T> {
                 ),
             })
             .collect();
+
         let errors: Vec<_> = positioned_errors
             .iter()
             .map(|e| e.message.clone())
             .collect();
 
-        Parse::new_with_positioned_errors(new_green, errors, positioned_errors)
+        // Offset-shift positioned warnings from the reparsed region
+        let positioned_warnings: Vec<_> = reparsed
+            .positioned_warnings
+            .iter()
+            .map(|e| PositionedParseWarning {
+                message: e.message.clone(),
+                position: rowan::TextRange::new(
+                    e.position.start() + reparse_start,
+                    e.position.end() + reparse_start,
+                ),
+            })
+            .collect();
+
+        let warnings: Vec<_> = positioned_warnings
+            .iter()
+            .map(|e| e.message.clone())
+            .collect();
+
+        Parse::new_with_positioned_errors(
+            new_green,
+            errors,
+            positioned_errors,
+            warnings,
+            positioned_warnings,
+        )
     }
 }
 
