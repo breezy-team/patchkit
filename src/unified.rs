@@ -775,11 +775,16 @@ where
             } else if line.starts_with(b"#") {
                 continue;
             } else if self.orig_range > 0 || self.mod_range > 0 {
+                // Saturate at 0: a hunk body that runs past its declared
+                // length (more `+`/`-`/` ` lines than the header promised)
+                // would otherwise underflow these counters. The real
+                // malformed-hunk error is surfaced downstream by
+                // `iter_hunks`; here we just keep grouping lines.
                 if line.starts_with(b"-") || line.starts_with(b" ") {
-                    self.orig_range -= 1;
+                    self.orig_range = self.orig_range.saturating_sub(1);
                 }
                 if line.starts_with(b"+") || line.starts_with(b" ") {
-                    self.mod_range -= 1;
+                    self.mod_range = self.mod_range.saturating_sub(1);
                 }
                 self.saved_lines.push(line);
             } else if line.starts_with(b"--- ") || BINARY_FILES_RE.is_match(line.as_slice()) {
@@ -921,6 +926,47 @@ mod iter_file_patch_tests {
                         .collect::<Vec<_>>()
                 )
             ]
+        );
+    }
+
+    /// Regression: a hunk body that contains more `+`/`-`/` ` lines
+    /// than the header declared used to panic with "attempt to
+    /// subtract with overflow" because the per-line counters in
+    /// `FileEntryIter` did unguarded `usize` subtraction. Surfaced
+    /// by cargo-fuzz against the unified parser.
+    ///
+    /// `FileEntryIter` only groups lines into per-file chunks; the
+    /// real malformed-hunk error is reported downstream by
+    /// `iter_hunks`. So here we just assert that grouping succeeds
+    /// (no panic) and that the full input is captured.
+    #[test]
+    fn test_over_long_hunk_body_does_not_panic() {
+        let lines = ["--- a\n", "+++ b\n", "@@ -1,1 +1,1 @@\n", "+x\n", "+y\n"];
+        let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
+        let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(
+            entries,
+            vec![super::FileEntry::Patch(
+                lines
+                    .iter()
+                    .map(|l| l.as_bytes().to_vec())
+                    .collect::<Vec<_>>()
+            )]
+        );
+    }
+
+    /// Same shape as `test_over_long_hunk_body_does_not_panic`, but
+    /// asserts the end-to-end `parse_patches` call surfaces a
+    /// syntax error rather than panicking or returning Ok.
+    #[test]
+    fn test_over_long_hunk_body_reports_error() {
+        let lines = ["--- a\n", "+++ b\n", "@@ -1,1 +1,1 @@\n", "+x\n", "+y\n"];
+        let results: Vec<_> =
+            super::parse_patches(lines.into_iter().map(|l| l.as_bytes().to_vec())).collect();
+        assert!(
+            results.iter().any(|r| r.is_err()),
+            "expected a syntax error, got {} Ok result(s)",
+            results.iter().filter(|r| r.is_ok()).count(),
         );
     }
 }
@@ -1578,6 +1624,7 @@ mod hunk_tests {
         assert_malformed_header(&b"@@ -34,11 +50,6.5 @@\n"[..]);
         assert_malformed_header(&b"@@ -34,11 +50,-6 @@\n"[..]);
     }
+
 }
 
 #[cfg(test)]
