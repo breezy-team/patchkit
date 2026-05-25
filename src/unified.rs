@@ -1442,7 +1442,10 @@ impl Hunk {
             _ => return Err(MalformedHunkHeader("Does not match format.", line.to_vec())),
         }?;
 
-        if orig[0] != b'-' || modi[0] != b'+' {
+        // Reject empty range slices up-front: a header like `@@  +2 @@`
+        // splits into `["", "+2"]`, which matches the [orig, modi]
+        // pattern above but would then panic on `orig[0]`.
+        if orig.is_empty() || modi.is_empty() || orig[0] != b'-' || modi[0] != b'+' {
             return Err(MalformedHunkHeader(
                 "Positions don't start with + or -.",
                 line.to_vec(),
@@ -1625,6 +1628,16 @@ mod hunk_tests {
         assert_malformed_header(&b"@@ -34,11 +50,-6 @@\n"[..]);
     }
 
+    /// Regression: a hunk header with two consecutive spaces between
+    /// the `@@` markers (e.g. `@@  +2 @@`) used to panic with "index
+    /// out of bounds" because the split produced an empty `orig` (or
+    /// `modi`) slice that was then indexed unconditionally. Surfaced
+    /// by cargo-fuzz against the unified parser.
+    #[test]
+    fn test_empty_range_header() {
+        assert_malformed_header(&b"@@  +2 @@\n"[..]);
+        assert_malformed_header(&b"@@ -1  @@\n"[..]);
+    }
 }
 
 #[cfg(test)]
