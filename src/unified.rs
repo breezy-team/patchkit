@@ -1099,6 +1099,19 @@ impl UnifiedPatch {
         }
     }
 
+    /// Reverse this patch: the original and modified sides swap, so applying the
+    /// result undoes the original patch. Use to un-apply a patch, e.g. to
+    /// reconstruct a file's pre-patch content from its patched content.
+    pub fn reverse(&self) -> UnifiedPatch {
+        UnifiedPatch {
+            orig_name: self.mod_name.clone(),
+            orig_ts: self.mod_ts.clone(),
+            mod_name: self.orig_name.clone(),
+            mod_ts: self.orig_ts.clone(),
+            hunks: self.hunks.iter().map(Hunk::reverse).collect(),
+        }
+    }
+
     /// Serialize this patch to a byte vector
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -1235,6 +1248,51 @@ mod patch_tests {
             }],
         };
         assert_eq!(patch.as_bytes(), b"--- foo\n+++ bar\n@@ -1 +2 @@\n foo\n");
+    }
+
+    const SAMPLE: &[u8] = b"--- a/file\n+++ b/file\n@@ -1,3 +1,4 @@\n line 1\n-line 2\n+line two\n+line two-and-a-half\n line 3\n";
+
+    #[test]
+    fn reverse_swaps_names_and_lines() {
+        let lines: Vec<&[u8]> = super::splitlines(SAMPLE).collect();
+        let patch = super::UnifiedPatch::parse_patch(lines.into_iter()).unwrap();
+        let rev = patch.reverse();
+        assert_eq!(rev.orig_name, b"b/file");
+        assert_eq!(rev.mod_name, b"a/file");
+        let h = &rev.hunks[0];
+        // The original hunk was -1,3 +1,4; reversed it is -1,4 +1,3.
+        assert_eq!((h.orig_pos, h.orig_range), (1, 4));
+        assert_eq!((h.mod_pos, h.mod_range), (1, 3));
+        assert_eq!(
+            h.lines,
+            vec![
+                super::HunkLine::ContextLine(b"line 1\n".to_vec()),
+                super::HunkLine::InsertLine(b"line 2\n".to_vec()),
+                super::HunkLine::RemoveLine(b"line two\n".to_vec()),
+                super::HunkLine::RemoveLine(b"line two-and-a-half\n".to_vec()),
+                super::HunkLine::ContextLine(b"line 3\n".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reverse_is_an_involution() {
+        let lines: Vec<&[u8]> = super::splitlines(SAMPLE).collect();
+        let patch = super::UnifiedPatch::parse_patch(lines.into_iter()).unwrap();
+        assert_eq!(patch.reverse().reverse().as_bytes(), patch.as_bytes());
+    }
+
+    #[test]
+    fn reverse_then_apply_undoes_the_patch() {
+        use crate::ContentPatch;
+        let orig = b"line 1\nline 2\nline 3\n";
+        let lines: Vec<&[u8]> = super::splitlines(SAMPLE).collect();
+        let patch = super::UnifiedPatch::parse_patch(lines.into_iter()).unwrap();
+        let patched = patch.apply_exact(orig).unwrap();
+        assert_eq!(patched, b"line 1\nline two\nline two-and-a-half\nline 3\n");
+        // Reverse-applying the patch to the patched content restores the original.
+        let restored = patch.reverse().apply_exact(&patched).unwrap();
+        assert_eq!(restored, orig);
     }
 }
 
@@ -1547,6 +1605,29 @@ impl Hunk {
             }
         }
         Some(shift)
+    }
+
+    /// Reverse this hunk: the original and modified sides swap, so applying the
+    /// reversed hunk undoes the original. Inserted lines become removed and vice
+    /// versa; context lines are unchanged.
+    pub fn reverse(&self) -> Hunk {
+        let lines = self
+            .lines
+            .iter()
+            .map(|l| match l {
+                HunkLine::InsertLine(b) => HunkLine::RemoveLine(b.clone()),
+                HunkLine::RemoveLine(b) => HunkLine::InsertLine(b.clone()),
+                HunkLine::ContextLine(b) => HunkLine::ContextLine(b.clone()),
+            })
+            .collect();
+        Hunk {
+            orig_pos: self.mod_pos,
+            orig_range: self.mod_range,
+            mod_pos: self.orig_pos,
+            mod_range: self.orig_range,
+            tail: self.tail.clone(),
+            lines,
+        }
     }
 }
 
