@@ -82,6 +82,7 @@ ast_node!(HunkLine, SyntaxKind::HUNK_LINE);
 ast_node!(ContextLine, SyntaxKind::CONTEXT_LINE);
 ast_node!(AddLine, SyntaxKind::ADD_LINE);
 ast_node!(DeleteLine, SyntaxKind::DELETE_LINE);
+ast_node!(NoNewlineLine, SyntaxKind::NO_NEWLINE_LINE);
 
 // Context diff nodes
 ast_node!(ContextDiffFile, SyntaxKind::CONTEXT_DIFF_FILE);
@@ -245,9 +246,10 @@ impl Hunk {
         self.syntax()
             .children()
             .filter_map(|child| match child.kind() {
-                SyntaxKind::CONTEXT_LINE | SyntaxKind::ADD_LINE | SyntaxKind::DELETE_LINE => {
-                    Some(HunkLine { syntax: child })
-                }
+                SyntaxKind::CONTEXT_LINE
+                | SyntaxKind::ADD_LINE
+                | SyntaxKind::DELETE_LINE
+                | SyntaxKind::NO_NEWLINE_LINE => Some(HunkLine { syntax: child }),
                 _ => None,
             })
     }
@@ -464,6 +466,16 @@ impl HunkLine {
         DeleteLine::cast(self.syntax().clone())
     }
 
+    /// Attempt to cast this line as a "\ No newline at end of file" marker
+    pub fn as_no_newline(&self) -> Option<NoNewlineLine> {
+        NoNewlineLine::cast(self.syntax().clone())
+    }
+
+    /// Whether this line is a "\ No newline at end of file" marker.
+    pub fn is_no_newline(&self) -> bool {
+        self.syntax().kind() == SyntaxKind::NO_NEWLINE_LINE
+    }
+
     /// Get the text content of this line
     pub fn text(&self) -> Option<String> {
         // Collect all tokens, skipping only the first one if it's a line prefix
@@ -473,12 +485,13 @@ impl HunkLine {
             .filter_map(|it| it.into_token())
             .filter(|token| token.kind() != SyntaxKind::NEWLINE);
 
-        // Skip the first token if it's a line prefix (SPACE, MINUS, or PLUS)
+        // Skip the first token if it's a line prefix (SPACE, MINUS, PLUS, or
+        // the BACKSLASH of a no-newline marker).
         let mut iter = tokens.peekable();
         if let Some(first) = iter.peek() {
             if matches!(
                 first.kind(),
-                SyntaxKind::SPACE | SyntaxKind::MINUS | SyntaxKind::PLUS
+                SyntaxKind::SPACE | SyntaxKind::MINUS | SyntaxKind::PLUS | SyntaxKind::BACKSLASH
             ) {
                 iter.next(); // Skip the prefix
             }

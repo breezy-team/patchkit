@@ -45,6 +45,7 @@ pub use lossless::{
     HunkStats,
     Lang,
     NewFile,
+    NoNewlineLine,
     NormalChangeCommand,
     // Normal diff types
     NormalHunk,

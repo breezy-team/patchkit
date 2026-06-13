@@ -893,6 +893,16 @@ Added: svn:keywords
         let patch = parsed.tree();
         let files: Vec<_> = patch.patch_files().collect();
         assert_eq!(files.len(), 2);
+
+        // Every "\ No newline" marker (with or without a following space) is
+        // recognised as a no-newline line rather than a context line.
+        let markers = files
+            .iter()
+            .flat_map(|f| f.hunks())
+            .flat_map(|h| h.lines().collect::<Vec<_>>())
+            .filter(|l| l.is_no_newline())
+            .count();
+        assert_eq!(markers, 4);
     }
 
     #[test]
