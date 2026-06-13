@@ -277,6 +277,13 @@ impl<'a> Parser<'a> {
                     .start_node_at(checkpoint, SyntaxKind::DELETE_LINE.into());
                 self.advance(); // -
             }
+            Some(SyntaxKind::BACKSLASH) => {
+                // The "\ No newline at end of file" marker: a line starting
+                // with a backslash is reserved for it in the diff grammar.
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::NO_NEWLINE_LINE.into());
+                self.advance(); // backslash
+            }
             _ => {
                 // Unknown line type, treat as context
                 self.builder
@@ -644,6 +651,12 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::DELETE_LINE.into());
                 self.advance(); // -
+            }
+            Some(SyntaxKind::BACKSLASH) => {
+                // The "\ No newline at end of file" marker.
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::NO_NEWLINE_LINE.into());
+                self.advance(); // backslash
             }
             _ => {
                 self.builder

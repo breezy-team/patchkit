@@ -321,6 +321,14 @@ line 2 modified
 ---
 > line 2 modified
 "#,
+            // Unified diff with a no-newline-at-eof marker
+            r#"--- a/file.txt
++++ b/file.txt
+@@ -1 +1 @@
+-old
++new
+\ No newline at end of file
+"#,
         ];
 
         for input in inputs {

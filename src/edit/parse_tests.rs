@@ -179,8 +179,12 @@ that should be ignored
         let lines: Vec<_> = hunk.lines().collect();
 
         assert_eq!(lines.len(), 3);
-        // The "\ No newline at end of file" should be parsed as text
-        assert_eq!(lines[2].text().unwrap(), "\\ No newline at end of file");
+        // The "\ No newline at end of file" marker is its own node, distinct
+        // from a context line, and its text has the backslash prefix stripped.
+        assert!(lines[2].is_no_newline());
+        assert!(lines[2].as_no_newline().is_some());
+        assert!(lines[2].as_context().is_none());
+        assert_eq!(lines[2].text().unwrap(), " No newline at end of file");
     }
 
     #[test]
