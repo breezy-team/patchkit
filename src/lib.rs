@@ -40,6 +40,7 @@
 //! assert_eq!(applied, b"b\n");
 //! ```
 
+pub mod apply;
 pub mod ed;
 /// Module for lossless parsing and editing of patch files
 pub mod edit;
