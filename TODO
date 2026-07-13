@@ -1,4 +1,3 @@
-- support applying patches with fuzz
 - support generating diffs
  + myers
  + patiencediff

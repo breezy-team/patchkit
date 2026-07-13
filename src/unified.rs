@@ -1,4 +1,5 @@
 //! Parsing of unified patches
+use crate::apply::ApplyResult;
 use crate::{ContentPatch, SingleFilePatch};
 use std::num::ParseIntError;
 
@@ -1448,6 +1449,22 @@ impl UnifiedPatch {
                 Err(e) => Some(Err(e)),
             })
             .collect()
+    }
+
+    /// Apply this patch, allowing hunks to be shifted from the position in their
+    /// header and, if `options.fuzz` is non-zero, allowing some of their context
+    /// lines to be ignored.
+    ///
+    /// Unlike [`ContentPatch::apply_exact`], this reports the outcome of every
+    /// hunk rather than failing on the first conflict.
+    pub fn apply_fuzzy(&self, orig: &[u8], options: &crate::apply::ApplyOptions) -> ApplyResult {
+        crate::apply::apply_fuzzy(orig, &self.hunks, options)
+    }
+
+    /// Report which hunks of this patch would apply to `orig`, without producing
+    /// the patched content.
+    pub fn dry_run(&self, orig: &[u8], options: &crate::apply::ApplyOptions) -> ApplyResult {
+        crate::apply::dry_run(orig, &self.hunks, options)
     }
 }
 
