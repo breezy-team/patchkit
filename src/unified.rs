@@ -286,6 +286,23 @@ pub fn iter_hunks<'a, I>(iter_lines: &mut I) -> impl Iterator<Item = Result<Hunk
 where
     I: Iterator<Item = &'a [u8]>,
 {
+    iter_hunks_dirty(iter_lines, false)
+}
+
+/// Iterate over the hunks in a patch, optionally tolerating trailing junk.
+///
+/// # Arguments
+/// * `iter_lines`: Iterator over lines
+/// * `allow_dirty`: If true, a line that is not a hunk header ends iteration
+///   instead of producing a `MalformedHunkHeader` error. This lets a patch be
+///   followed by comments or other non-patch text.
+pub fn iter_hunks_dirty<'a, I>(
+    iter_lines: &mut I,
+    allow_dirty: bool,
+) -> impl Iterator<Item = Result<Hunk, Error>> + '_
+where
+    I: Iterator<Item = &'a [u8]>,
+{
     std::iter::from_fn(move || {
         while let Some(line) = iter_lines.next() {
             if line == b"\n" {
@@ -339,6 +356,11 @@ where
                     return Some(Ok(new_hunk));
                 }
                 Err(MalformedHunkHeader(m, l)) => {
+                    if allow_dirty {
+                        // Not a hunk header, so the patch has ended and what
+                        // follows is junk. Stop rather than reporting it.
+                        return None;
+                    }
                     return Some(Err(Error::MalformedHunkHeader(
                         m.to_string(),
                         l.into_boxed_slice(),
@@ -429,6 +451,22 @@ pub fn parse_patch<'a, I>(iter_lines: I) -> Result<PlainOrBinaryPatch, Error>
 where
     I: Iterator<Item = &'a [u8]> + 'a,
 {
+    parse_patch_dirty(iter_lines, false)
+}
+
+/// Parse a patch file, optionally tolerating trailing junk.
+///
+/// # Arguments
+/// * `iter_lines`: Iterator over lines
+/// * `allow_dirty`: If true, non-patch text after the hunks is ignored rather
+///   than reported as a malformed hunk header.
+pub fn parse_patch_dirty<'a, I>(
+    iter_lines: I,
+    allow_dirty: bool,
+) -> Result<PlainOrBinaryPatch, Error>
+where
+    I: Iterator<Item = &'a [u8]> + 'a,
+{
     let mut iter_lines = iter_lines_handle_nl(iter_lines);
 
     let ((orig_name, orig_ts), (mod_name, mod_ts)) = match get_patch_names(&mut iter_lines) {
@@ -440,7 +478,7 @@ where
     };
 
     let mut patch = UnifiedPatch::new(orig_name, orig_ts, mod_name, mod_ts);
-    for hunk in iter_hunks(&mut iter_lines) {
+    for hunk in iter_hunks_dirty(&mut iter_lines, allow_dirty) {
         patch.hunks.push(hunk?);
     }
     Ok(PlainOrBinaryPatch::Plain(patch))
@@ -730,6 +768,17 @@ struct FileEntryIter<I> {
     is_dirty: bool,
     orig_range: usize,
     mod_range: usize,
+    /// When set, `=== ` lines are buffered in `dirty_head` and attached to the
+    /// next patch rather than being emitted as separate `Meta` entries.
+    ///
+    /// `Meta` entries are yielded as soon as they are seen, but a patch is only
+    /// yielded once the line starting the *following* section arrives. Emitting
+    /// both independently would therefore report every `=== ` line before any
+    /// patch, losing which metadata belongs to which patch.
+    keep_dirty: bool,
+    dirty_head: Vec<Vec<u8>>,
+    /// The metadata that preceded the entry most recently returned by `next`.
+    emitted_head: Vec<Vec<u8>>,
 }
 
 impl<I> FileEntryIter<I>
@@ -748,6 +797,14 @@ where
             None
         }
     }
+
+    /// Take the buffered entry, moving the metadata staged so far into
+    /// `emitted_head` so the caller can pair it with this entry.
+    fn take_entry_with_head(&mut self) -> Option<FileEntry> {
+        let entry = self.entry()?;
+        self.emitted_head = std::mem::take(&mut self.dirty_head);
+        Some(entry)
+    }
 }
 
 impl<I> Iterator for FileEntryIter<I>
@@ -761,7 +818,7 @@ where
             let line = match self.iter.next() {
                 Some(line) => line,
                 None => {
-                    if let Some(entry) = self.entry() {
+                    if let Some(entry) = self.take_entry_with_head() {
                         return Some(Ok(entry));
                     } else {
                         return None;
@@ -769,6 +826,18 @@ where
                 }
             };
             if line.starts_with(b"=== ") {
+                if self.keep_dirty {
+                    // Hold this until the patch it precedes is emitted; see
+                    // the note on `keep_dirty`. Any patch still buffered was
+                    // preceded by the metadata staged so far, so flush it
+                    // (carrying that metadata) before staging this line.
+                    let entry = self.take_entry_with_head();
+                    self.dirty_head.push(line);
+                    if let Some(entry) = entry {
+                        return Some(Ok(entry));
+                    }
+                    continue;
+                }
                 return Some(Ok(FileEntry::Meta(line)));
             } else if line.starts_with(b"*** ") {
                 continue;
@@ -788,7 +857,7 @@ where
                 }
                 self.saved_lines.push(line);
             } else if line.starts_with(b"--- ") || BINARY_FILES_RE.is_match(line.as_slice()) {
-                let entry = self.entry();
+                let entry = self.take_entry_with_head();
                 self.is_dirty = false;
                 self.saved_lines.push(line);
                 if let Some(entry) = entry {
@@ -829,12 +898,21 @@ pub fn iter_file_patch<I>(orig: I) -> impl Iterator<Item = Result<FileEntry, Err
 where
     I: Iterator<Item = Vec<u8>>,
 {
-    FileEntryIter {
-        iter: orig,
-        orig_range: 0,
-        saved_lines: Vec::new(),
-        is_dirty: false,
-        mod_range: 0,
+    FileEntryIter::new(orig, false)
+}
+
+impl<I> FileEntryIter<I> {
+    fn new(iter: I, keep_dirty: bool) -> Self {
+        FileEntryIter {
+            iter,
+            orig_range: 0,
+            saved_lines: Vec::new(),
+            is_dirty: false,
+            mod_range: 0,
+            keep_dirty,
+            dirty_head: Vec::new(),
+            emitted_head: Vec::new(),
+        }
     }
 }
 
@@ -972,6 +1050,7 @@ mod iter_file_patch_tests {
 }
 
 /// A patch that can be applied to a single file
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlainOrBinaryPatch {
     /// A unified patch
     Plain(UnifiedPatch),
@@ -1024,6 +1103,72 @@ where
     })
 }
 
+/// A patch together with the metadata lines that preceded it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirtyPatch {
+    /// The parsed patch.
+    pub patch: PlainOrBinaryPatch,
+
+    /// The `=== ` metadata lines seen since the previous patch, in order.
+    pub dirty_head: Vec<Vec<u8>>,
+}
+
+/// Parse a patch file, controlling how non-patch text is handled.
+///
+/// # Arguments
+/// * `iter`: Iterator over lines
+/// * `allow_dirty`: If true, comments and other non-patch text are tolerated
+///   before and after each patch. If false, junk is reported as an error.
+/// * `keep_dirty`: If true, the `=== ` metadata lines preceding each patch are
+///   retained in [`DirtyPatch::dirty_head`] rather than discarded. Lines
+///   accumulate across consecutive metadata lines and are attached to the next
+///   patch emitted.
+pub fn parse_patches_dirty<I>(
+    iter: I,
+    allow_dirty: bool,
+    keep_dirty: bool,
+) -> impl Iterator<Item = Result<DirtyPatch, Error>>
+where
+    I: Iterator<Item = Vec<u8>>,
+{
+    // Drive `FileEntryIter` directly rather than going through
+    // `iter_file_patch`: in keep_dirty mode it pairs each patch with the
+    // metadata that preceded it, which it exposes via `emitted_head`.
+    let mut entries = FileEntryIter::new(iter, keep_dirty);
+
+    std::iter::from_fn(move || loop {
+        match entries.next()? {
+            Ok(FileEntry::Patch(lines)) => {
+                let head = std::mem::take(&mut entries.emitted_head);
+                return Some(
+                    parse_patch_dirty(lines.iter().map(|l| l.as_slice()), allow_dirty).map(
+                        |patch| DirtyPatch {
+                            patch,
+                            dirty_head: head,
+                        },
+                    ),
+                );
+            }
+            // Only produced when keep_dirty is off, in which case the metadata
+            // is discarded.
+            Ok(FileEntry::Meta(_)) => {}
+            Ok(FileEntry::Junk(lines)) => {
+                if !allow_dirty {
+                    return Some(Err(Error::PatchSyntax(
+                        "Junk in patch",
+                        lines
+                            .into_iter()
+                            .next()
+                            .unwrap_or_default()
+                            .into_boxed_slice(),
+                    )));
+                }
+            }
+            Err(e) => return Some(Err(e)),
+        }
+    })
+}
+
 #[cfg(test)]
 mod parse_patches_tests {
     #[test]
@@ -1039,6 +1184,118 @@ mod parse_patches_tests {
         ];
         let patches =
             super::parse_patches(lines.iter().map(|l| l.as_bytes().to_vec())).collect::<Vec<_>>();
+        assert_eq!(patches.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod parse_patches_dirty_tests {
+    use super::{parse_patches_dirty, Error, PlainOrBinaryPatch};
+
+    fn lines(ls: &[&str]) -> Vec<Vec<u8>> {
+        ls.iter().map(|l| l.as_bytes().to_vec()).collect()
+    }
+
+    /// The `--- `/`+++ ` header lines of a hunkless patch.
+    fn header_of(patch: &PlainOrBinaryPatch) -> Vec<u8> {
+        match patch {
+            PlainOrBinaryPatch::Plain(p) => p.as_bytes(),
+            PlainOrBinaryPatch::Binary(_) => Vec::new(),
+        }
+    }
+
+    /// Leading non-patch noise is tolerated when allow_dirty is set, and
+    /// rejected otherwise.
+    #[test]
+    fn test_leading_noise() {
+        let input = lines(&[
+            "diff -pruN commands.py\n",
+            "--- orig/commands.py\n",
+            "+++ mod/dommands.py\n",
+        ]);
+
+        let ok = parse_patches_dirty(input.clone().into_iter(), true, false)
+            .collect::<Result<Vec<_>, Error>>()
+            .unwrap();
+        assert_eq!(ok.len(), 1);
+
+        let strict =
+            parse_patches_dirty(input.into_iter(), false, false).collect::<Result<Vec<_>, Error>>();
+        assert!(strict.is_err());
+    }
+
+    /// keep_dirty accumulates consecutive `=== ` lines and attaches them to
+    /// the next patch. The first patch here is preceded by two such lines.
+    #[test]
+    fn test_preserve_dirty_head() {
+        let input = lines(&[
+            "=== added directory 'foo/bar'\n",
+            "=== modified file 'orig/commands.py'\n",
+            "--- orig/commands.py\n",
+            "+++ mod/dommands.py\n",
+            "=== modified file 'orig/another.py'\n",
+            "--- orig/another.py\n",
+            "+++ mod/another.py\n",
+        ]);
+
+        let patches = parse_patches_dirty(input.into_iter(), true, true)
+            .collect::<Result<Vec<_>, Error>>()
+            .unwrap();
+
+        assert_eq!(patches.len(), 2);
+        assert_eq!(
+            patches[0].dirty_head,
+            vec![
+                b"=== added directory 'foo/bar'\n".to_vec(),
+                b"=== modified file 'orig/commands.py'\n".to_vec(),
+            ]
+        );
+        assert_eq!(
+            header_of(&patches[0].patch),
+            b"--- orig/commands.py\n+++ mod/dommands.py\n".to_vec()
+        );
+        assert_eq!(
+            patches[1].dirty_head,
+            vec![b"=== modified file 'orig/another.py'\n".to_vec()]
+        );
+        assert_eq!(
+            header_of(&patches[1].patch),
+            b"--- orig/another.py\n+++ mod/another.py\n".to_vec()
+        );
+    }
+
+    /// Without keep_dirty the metadata lines are discarded, not carried over
+    /// onto the next patch.
+    #[test]
+    fn test_dirty_head_discarded_without_keep_dirty() {
+        let input = lines(&[
+            "=== modified file 'orig/commands.py'\n",
+            "--- orig/commands.py\n",
+            "+++ mod/dommands.py\n",
+        ]);
+
+        let patches = parse_patches_dirty(input.into_iter(), true, false)
+            .collect::<Result<Vec<_>, Error>>()
+            .unwrap();
+        assert_eq!(patches.len(), 1);
+        assert!(patches[0].dirty_head.is_empty());
+    }
+
+    /// Trailing junk after the hunks ends the patch when allow_dirty is set.
+    #[test]
+    fn test_trailing_junk() {
+        let input = lines(&[
+            "--- orig/commands.py\n",
+            "+++ mod/dommands.py\n",
+            "@@ -1,1 +1,1 @@\n",
+            "-a\n",
+            "+b\n",
+            "this is not a hunk header\n",
+        ]);
+
+        let patches = parse_patches_dirty(input.into_iter(), true, false)
+            .collect::<Result<Vec<_>, Error>>()
+            .unwrap();
         assert_eq!(patches.len(), 1);
     }
 }
