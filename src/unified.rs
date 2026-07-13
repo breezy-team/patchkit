@@ -522,6 +522,23 @@ pub struct PatchConflict {
     patch_line: Vec<u8>,
 }
 
+impl PatchConflict {
+    /// The line of the original file at which the conflict was found.
+    pub fn line_no(&self) -> usize {
+        self.line_no
+    }
+
+    /// The line the original file actually contained.
+    pub fn orig_line(&self) -> &[u8] {
+        &self.orig_line
+    }
+
+    /// The line the patch expected the original file to contain.
+    pub fn patch_line(&self) -> &[u8] {
+        &self.patch_line
+    }
+}
+
 impl std::fmt::Display for PatchConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
