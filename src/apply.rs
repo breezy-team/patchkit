@@ -103,6 +103,14 @@ pub struct ApplyResult {
     /// The patched content, or `None` if any hunk failed to apply.
     pub patched: Option<Vec<u8>>,
 
+    /// The content with whichever hunks did apply, or `None` for a dry run.
+    ///
+    /// patch(1) treats each hunk on its own, writing out the ones that matched
+    /// even when a sibling fails, so this is what it leaves on disk. Equal to
+    /// [`ApplyResult::patched`] when every hunk applied, and to the original
+    /// when none did.
+    pub partial: Option<Vec<u8>>,
+
     /// The outcome of each hunk, in patch order.
     pub hunks: Vec<HunkOutcome>,
 }
@@ -121,12 +129,13 @@ impl ApplyResult {
 
 /// Check whether a patch applies, without producing the patched content.
 ///
-/// The returned [`ApplyResult`] has `patched` set to `None`; consult
-/// [`ApplyResult::hunks`] for the per-hunk outcome. This is the dry-run
+/// The returned [`ApplyResult`] has both `patched` and `partial` set to `None`;
+/// consult [`ApplyResult::hunks`] for the per-hunk outcome. This is the dry-run
 /// counterpart of [`apply_fuzzy`].
 pub fn dry_run(orig: &[u8], hunks: &[Hunk], options: &ApplyOptions) -> ApplyResult {
     let mut result = apply_fuzzy(orig, hunks, options);
     result.patched = None;
+    result.partial = None;
     result
 }
 
@@ -134,7 +143,8 @@ pub fn dry_run(orig: &[u8], hunks: &[Hunk], options: &ApplyOptions) -> ApplyResu
 ///
 /// Every hunk that matches is applied; if any hunk fails to match,
 /// [`ApplyResult::patched`] is `None` and the failures are reported in
-/// [`ApplyResult::hunks`].
+/// [`ApplyResult::hunks`]. The hunks that did apply are still available from
+/// [`ApplyResult::partial`], which is what patch(1) would leave on disk.
 pub fn apply_fuzzy(orig: &[u8], hunks: &[Hunk], options: &ApplyOptions) -> ApplyResult {
     let orig_lines: Vec<&[u8]> = splitlines(orig).collect();
 
@@ -180,14 +190,12 @@ pub fn apply_fuzzy(orig: &[u8], hunks: &[Hunk], options: &ApplyOptions) -> Apply
         }
     }
 
-    let patched = if failed {
-        None
-    } else {
-        Some(splice(&orig_lines, &matches))
-    };
+    let spliced = splice(&orig_lines, &matches);
+    let patched = if failed { None } else { Some(spliced.clone()) };
 
     ApplyResult {
         patched,
+        partial: Some(spliced),
         hunks: outcomes,
     }
 }
@@ -468,6 +476,68 @@ mod tests {
         let result = apply_fuzzy(b"a\nb\nX\na\nb\n", &patch.hunks, &ApplyOptions::default());
         assert_eq!(result.patched.unwrap(), b"a\nb\nX\na\nB\n");
         assert_eq!(result.hunks[0].offset, 1);
+    }
+
+    /// patch(1) applies each hunk on its own: the ones that match are written
+    /// even when a sibling fails, leaving the file partially patched.
+    #[test]
+    fn partial_keeps_the_hunks_that_applied() {
+        let patch = parse(
+            b"--- a\n+++ b\n@@ -1,2 +1,2 @@\n-line 0\n+CHANGED 0\n line 1\n@@ -3,1 +3,1 @@\n-line 3\n+CHANGED 3\n",
+        );
+        let result = apply_fuzzy(
+            b"perturbed\nline 1\nline 2\nline 3\n",
+            &patch.hunks,
+            &ApplyOptions::default(),
+        );
+
+        assert!(!result.is_success());
+        assert_eq!(result.patched, None);
+        assert_eq!(result.hunks[0].status, HunkStatus::Failed);
+        assert_eq!(result.hunks[1].status, HunkStatus::Applied);
+        assert_eq!(
+            result.partial.unwrap(),
+            b"perturbed\nline 1\nline 2\nCHANGED 3\n"
+        );
+    }
+
+    /// Nothing applied means the original is unchanged.
+    #[test]
+    fn partial_of_a_wholly_failed_patch_is_the_original() {
+        let patch = parse(SIMPLE);
+        let result = apply_fuzzy(
+            b"nothing\nin\ncommon\n",
+            &patch.hunks,
+            &ApplyOptions::default(),
+        );
+        assert_eq!(result.patched, None);
+        assert_eq!(result.partial.unwrap(), b"nothing\nin\ncommon\n");
+    }
+
+    /// When everything applies, the partial content is the patched content.
+    #[test]
+    fn partial_matches_patched_on_success() {
+        let patch = parse(SIMPLE);
+        let result = apply_fuzzy(
+            b"line 1\nline 2\nline 3\n",
+            &patch.hunks,
+            &ApplyOptions::default(),
+        );
+        assert_eq!(result.partial, result.patched);
+    }
+
+    /// A dry run produces no content at all, partial included.
+    #[test]
+    fn dry_run_yields_no_content() {
+        let patch = parse(SIMPLE);
+        let result = dry_run(
+            b"line 1\nline 2\nline 3\n",
+            &patch.hunks,
+            &ApplyOptions::default(),
+        );
+        assert_eq!(result.patched, None);
+        assert_eq!(result.partial, None);
+        assert_eq!(result.hunks[0].status, HunkStatus::Applied);
     }
 
     #[test]
