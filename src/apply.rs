@@ -378,6 +378,18 @@ fn matches_at(orig_lines: &[&[u8]], body: &[&[u8]], start: usize) -> bool {
     orig_lines[start..start + body.len()] == *body
 }
 
+/// Append a line, giving the one before it back its newline if it lacked one.
+///
+/// A line without a trailing newline is only meaningful at the end of the file.
+/// Once something follows it, patch(1) restores the newline rather than running
+/// the two lines together.
+fn push_line(out: &mut Vec<u8>, line: &[u8]) {
+    if !out.is_empty() && !out.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(line);
+}
+
 /// Build the patched content by replacing each matched hunk's original lines with
 /// its modified lines.
 fn splice(orig_lines: &[&[u8]], matches: &[(usize, &Hunk, usize)]) -> Vec<u8> {
@@ -389,17 +401,17 @@ fn splice(orig_lines: &[&[u8]], matches: &[(usize, &Hunk, usize)]) -> Vec<u8> {
         // rather than from the hunk, since they did not have to match.
         let hunk_start = start - fuzz_start;
         for line in &orig_lines[pos..hunk_start] {
-            out.extend_from_slice(line);
+            push_line(&mut out, line);
         }
 
         let mut orig_pos = hunk_start;
         for line in &hunk.lines {
             match line {
-                HunkLine::InsertLine(b) => out.extend_from_slice(b),
+                HunkLine::InsertLine(b) => push_line(&mut out, b),
                 HunkLine::ContextLine(_) => {
                     // Copy context from the original: with fuzz, the two may differ.
                     if let Some(l) = orig_lines.get(orig_pos) {
-                        out.extend_from_slice(l);
+                        push_line(&mut out, l);
                     }
                     orig_pos += 1;
                 }
@@ -412,7 +424,7 @@ fn splice(orig_lines: &[&[u8]], matches: &[(usize, &Hunk, usize)]) -> Vec<u8> {
     }
 
     for line in &orig_lines[pos.min(orig_lines.len())..] {
-        out.extend_from_slice(line);
+        push_line(&mut out, line);
     }
     out
 }
@@ -476,6 +488,35 @@ mod tests {
         let result = apply_fuzzy(b"a\nb\nX\na\nb\n", &patch.hunks, &ApplyOptions::default());
         assert_eq!(result.patched.unwrap(), b"a\nb\nX\na\nB\n");
         assert_eq!(result.hunks[0].offset, 1);
+    }
+
+    /// A line marked as having no trailing newline only really lacks one at the
+    /// end of the file. Spliced in mid-file it needs its newline back, or it
+    /// runs into the line after it.
+    #[test]
+    fn no_newline_line_spliced_mid_file_keeps_its_newline() {
+        let patch = parse(
+            b"--- a\n+++ b\n@@ -1 +1,3 @@\n line0\n+line1\n+line2\n\\ No newline at end of file\n",
+        );
+        let result = apply_fuzzy(
+            b"prefix0\nline0\nline1\nline2",
+            &patch.hunks,
+            &ApplyOptions::with_fuzz(2),
+        );
+        assert_eq!(
+            result.patched.unwrap(),
+            b"prefix0\nline1\nline2\nline0\nline1\nline2"
+        );
+    }
+
+    /// At the end of the file, the missing newline is preserved.
+    #[test]
+    fn no_newline_line_at_eof_stays_bare() {
+        let patch = parse(
+            b"--- a\n+++ b\n@@ -1,1 +1,1 @@\n-hello\n\\ No newline at end of file\n+goodbye\n\\ No newline at end of file\n",
+        );
+        let result = apply_fuzzy(b"hello", &patch.hunks, &ApplyOptions::default());
+        assert_eq!(result.patched.unwrap(), b"goodbye");
     }
 
     /// patch(1) applies each hunk on its own: the ones that match are written
