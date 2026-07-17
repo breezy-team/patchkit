@@ -167,14 +167,42 @@ static BINARY_FILES_RE: once_cell::sync::Lazy<regex::bytes::Regex> =
         lazy_regex::BytesRegex::new(r"^Binary files (.+) and (.+) differ").unwrap()
     });
 
-/// Get the names of the files in a patch
-pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
-    iter_lines: &mut T,
-) -> Result<((Vec<u8>, Option<Vec<u8>>), (Vec<u8>, Option<Vec<u8>>)), Error> {
-    let line = iter_lines
-        .next()
-        .ok_or_else(|| Error::PatchSyntax("No input", vec![].into()))?;
+/// A file name from a patch header with its optional timestamp.
+pub type PatchName = (Vec<u8>, Option<Vec<u8>>);
 
+/// Get the names of the files in a patch, advancing `iter_lines` past the
+/// `---`/`+++` headers and leaving the rest for a following [`iter_hunks`].
+///
+/// The item type is generic over anything that borrows as bytes, so this works
+/// equally for an iterator of `&[u8]` and one of owned `Vec<u8>`. The latter
+/// lets a caller that cannot hand out borrows of lazily-pulled lines (a Python
+/// iterator driven across an FFI boundary) drive it without collecting first.
+pub fn get_patch_names<L: AsRef<[u8]>, I: Iterator<Item = L>>(
+    iter_lines: &mut I,
+) -> Result<(PatchName, PatchName), Error> {
+    let orig = next_line(iter_lines.next())?;
+    let orig = parse_orig_header(orig.as_ref())?;
+    let modified = next_line(iter_lines.next())?;
+    let modified = parse_mod_header(modified.as_ref())?;
+    Ok((orig, modified))
+}
+
+fn next_line<L>(line: Option<L>) -> Result<L, Error> {
+    line.ok_or_else(|| Error::PatchSyntax("No input", vec![].into()))
+}
+
+/// Split a header name off its optional timestamp on a tab.
+fn split_name_ts(name: &[u8]) -> Option<PatchName> {
+    let mut parts = name.split(|&c| c == b'\t');
+    match (parts.next(), parts.next()) {
+        (Some(name), Some(ts)) => Some((name.to_vec(), Some(ts.to_vec()))),
+        (Some(name), None) => Some((name.to_vec(), None)),
+        _ => None,
+    }
+}
+
+/// Parse the `--- ` line, or report the binary-files marker as an error.
+fn parse_orig_header(line: &[u8]) -> Result<PatchName, Error> {
     if let Some(captures) = BINARY_FILES_RE.captures(line) {
         let orig_name = captures
             .get(1)
@@ -195,53 +223,22 @@ pub fn get_patch_names<'a, T: Iterator<Item = &'a [u8]>>(
         })?
         .strip_suffix(b"\n")
         .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec().into_boxed_slice()))?;
+    split_name_ts(orig_name).ok_or_else(|| {
+        Error::MalformedPatchHeader("No orig line", line.to_vec().into_boxed_slice())
+    })
+}
 
-    // Avoid collecting into Vec, use iterator directly
-    let mut parts = orig_name.split(|&c| c == b'\t');
-    let (orig_name, orig_ts) = match (parts.next(), parts.next()) {
-        (Some(name), Some(ts)) => (name.to_vec(), Some(ts.to_vec())),
-        (Some(name), None) => (name.to_vec(), None),
-        _ => {
-            return Err(Error::MalformedPatchHeader(
-                "No orig line",
-                line.to_vec().into_boxed_slice(),
-            ))
-        }
-    };
-
-    let line = iter_lines
-        .next()
-        .ok_or_else(|| Error::PatchSyntax("No input", vec![].into()))?;
-
-    let (mod_name, mod_ts) = match line.strip_prefix(b"+++ ") {
-        Some(line) => {
-            let mod_name = line.strip_suffix(b"\n").ok_or_else(|| {
-                Error::PatchSyntax("missing newline", line.to_vec().into_boxed_slice())
-            })?;
-
-            // Avoid collecting into Vec, use iterator directly
-            let mut parts = mod_name.split(|&c| c == b'\t');
-            let (mod_name, mod_ts) = match (parts.next(), parts.next()) {
-                (Some(name), Some(ts)) => (name.to_vec(), Some(ts.to_vec())),
-                (Some(name), None) => (name.to_vec(), None),
-                _ => {
-                    return Err(Error::PatchSyntax(
-                        "Invalid mod name",
-                        line.to_vec().into_boxed_slice(),
-                    ))
-                }
-            };
-            (mod_name, mod_ts)
-        }
-        None => {
-            return Err(Error::MalformedPatchHeader(
-                "No mod line",
-                line.to_vec().into_boxed_slice(),
-            ))
-        }
-    };
-
-    Ok(((orig_name, orig_ts), (mod_name, mod_ts)))
+/// Parse the `+++ ` line.
+fn parse_mod_header(line: &[u8]) -> Result<PatchName, Error> {
+    let mod_name = line
+        .strip_prefix(b"+++ ")
+        .ok_or_else(|| {
+            Error::MalformedPatchHeader("No mod line", line.to_vec().into_boxed_slice())
+        })?
+        .strip_suffix(b"\n")
+        .ok_or_else(|| Error::PatchSyntax("missing newline", line.to_vec().into_boxed_slice()))?;
+    split_name_ts(mod_name)
+        .ok_or_else(|| Error::PatchSyntax("Invalid mod name", line.to_vec().into_boxed_slice()))
 }
 
 #[cfg(test)]
@@ -276,6 +273,34 @@ mod get_patch_names_tests {
             e,
             super::Error::BinaryFiles(b"qoo".to_vec(), b"bar".to_vec())
         );
+    }
+
+    #[test]
+    fn owned_items_agree_with_borrowed() {
+        let lines = [
+            &b"--- baz	2009-10-14 19:49:59 +0000\n"[..],
+            &b"+++ quxx	2009-10-14 19:51:00 +0000\n"[..],
+        ];
+        let mut owned = lines.iter().map(|l| l.to_vec());
+        let mut borrowed = lines.into_iter();
+        assert_eq!(
+            super::get_patch_names(&mut owned).unwrap(),
+            super::get_patch_names(&mut borrowed).unwrap()
+        );
+    }
+
+    #[test]
+    fn owned_items_leave_the_tail_unread() {
+        let lines = [
+            b"--- orig/commands.py\t2020-09-09 23:39:35 +0000\n".to_vec(),
+            b"+++ mod/commands.py\t2020-09-09 23:39:35 +0000\n".to_vec(),
+            b"other\n".to_vec(),
+            b"foo\n".to_vec(),
+        ];
+        let mut iter = lines.into_iter();
+        super::get_patch_names(&mut iter).unwrap();
+        let rest: Vec<Vec<u8>> = iter.collect();
+        assert_eq!(rest, vec![b"other\n".to_vec(), b"foo\n".to_vec()]);
     }
 }
 

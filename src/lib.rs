@@ -41,6 +41,7 @@
 //! ```
 
 pub mod apply;
+pub mod apply_tree;
 pub mod ed;
 /// Module for lossless parsing and editing of patch files
 pub mod edit;
