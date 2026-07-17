@@ -861,6 +861,11 @@ where
                 continue;
             } else if line.starts_with(b"#") {
                 continue;
+            } else if line == NO_NL && !self.saved_lines.is_empty() {
+                // The marker is not counted in the hunk header's ranges, so it
+                // can arrive after both are exhausted. It qualifies the line
+                // before it either way.
+                self.saved_lines.push(line);
             } else if self.orig_range > 0 || self.mod_range > 0 {
                 // Saturate at 0: a hunk body that runs past its declared
                 // length (more `+`/`-`/` ` lines than the header promised)
@@ -936,6 +941,32 @@ impl<I> FileEntryIter<I> {
 
 #[cfg(test)]
 mod iter_file_patch_tests {
+    /// The no-newline marker is not counted in the hunk header's ranges, so it
+    /// can arrive once both are exhausted. It still belongs to the hunk.
+    #[test]
+    fn test_no_newline_marker_after_last_line() {
+        let lines = [
+            "--- a/f.txt\n",
+            "+++ b/f.txt\n",
+            "@@ -1,1 +1,1 @@\n",
+            "-hello\n",
+            "\\ No newline at end of file\n",
+            "+goodbye\n",
+            "\\ No newline at end of file\n",
+        ];
+        let iter = super::iter_file_patch(lines.into_iter().map(|l| l.as_bytes().to_vec()));
+        let entries = iter.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(
+            entries,
+            vec![super::FileEntry::Patch(
+                lines
+                    .iter()
+                    .map(|l| l.as_bytes().to_vec())
+                    .collect::<Vec<_>>()
+            )]
+        );
+    }
+
     #[test]
     fn test_simple() {
         let lines = [
