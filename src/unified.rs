@@ -126,12 +126,11 @@ where
     std::iter::from_fn(move || {
         for line in iter_lines.by_ref() {
             if line == NO_NL {
+                // A repeated or leading marker has nothing to strip; it is not fatal.
                 if let Some(last) = last_line.as_mut() {
-                    assert!(last.ends_with(b"\n"));
-                    // Drop the last newline from `last`
-                    *last = &last[..last.len() - 1];
-                } else {
-                    panic!("No newline indicator without previous line");
+                    if let Some(stripped) = last.strip_suffix(b"\n") {
+                        *last = stripped;
+                    }
                 }
             } else {
                 if let Some(last) = last_line.take() {
@@ -159,6 +158,26 @@ fn test_iter_lines_handle_nl() {
     assert_eq!(iter.next(), Some("line 2\n".as_bytes()));
     assert_eq!(iter.next(), Some("line 3\n".as_bytes()));
     assert_eq!(iter.next(), Some("line 4".as_bytes()));
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn test_iter_lines_handle_nl_repeated_marker() {
+    let lines = vec![
+        &b"line 1\n"[..],
+        &b"\\ No newline at end of file\n"[..],
+        &b"\\ No newline at end of file\n"[..],
+    ];
+    let mut iter = iter_lines_handle_nl(lines.into_iter());
+    assert_eq!(iter.next(), Some("line 1".as_bytes()));
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn test_iter_lines_handle_nl_leading_marker() {
+    let lines = vec![&b"\\ No newline at end of file\n"[..], &b"line 1\n"[..]];
+    let mut iter = iter_lines_handle_nl(lines.into_iter());
+    assert_eq!(iter.next(), Some("line 1\n".as_bytes()));
     assert_eq!(iter.next(), None);
 }
 
