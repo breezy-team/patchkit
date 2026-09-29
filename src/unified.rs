@@ -1941,7 +1941,7 @@ impl Hunk {
 
     /// Shift a position to the modified file
     pub fn shift_to_mod(&self, pos: usize) -> Option<isize> {
-        if pos < self.orig_pos - 1 {
+        if pos < self.orig_pos.saturating_sub(1) {
             Some(0)
         } else if pos > self.orig_pos + self.orig_range {
             Some((self.mod_range as isize) - (self.orig_range as isize))
@@ -1952,7 +1952,7 @@ impl Hunk {
 
     /// Shift a position to the original file
     fn shift_to_mod_lines(&self, pos: usize) -> Option<isize> {
-        let mut position = self.orig_pos - 1;
+        let mut position = self.orig_pos.saturating_sub(1);
         let mut shift = 0;
         for line in &self.lines {
             match line {
@@ -2012,7 +2012,7 @@ pub fn parse_range(textrange: &str) -> Result<(usize, usize), ParseIntError> {
 
 #[cfg(test)]
 mod hunk_tests {
-    use super::Hunk;
+    use super::{Hunk, HunkLine};
 
     #[test]
     fn from_header_test() {
@@ -2055,6 +2055,40 @@ mod hunk_tests {
         let hunk = Hunk::from_header(header).unwrap();
         assert_eq!(&b"bzr 0.18rc1  2007-07-10"[..], hunk.tail.as_ref().unwrap());
         assert_eq!(&header[..], hunk.as_bytes());
+    }
+
+    fn hunk(header: &[u8], lines: &[HunkLine]) -> Hunk {
+        let mut hunk = Hunk::from_header(header).unwrap();
+        hunk.lines = lines.to_vec();
+        hunk
+    }
+
+    #[test]
+    fn test_shift_to_mod() {
+        let h = hunk(
+            b"@@ -2,2 +2,3 @@\n",
+            &[
+                HunkLine::RemoveLine(b"a\n".to_vec()),
+                HunkLine::InsertLine(b"b\n".to_vec()),
+                HunkLine::InsertLine(b"c\n".to_vec()),
+                HunkLine::ContextLine(b"d\n".to_vec()),
+            ],
+        );
+        assert_eq!(h.shift_to_mod(0), Some(0));
+        assert_eq!(h.shift_to_mod(1), None);
+        assert_eq!(h.shift_to_mod(2), Some(1));
+        assert_eq!(h.shift_to_mod(9), Some(1));
+    }
+
+    #[test]
+    fn test_shift_to_mod_new_file() {
+        let insert = HunkLine::InsertLine(b"a\n".to_vec());
+        let h = hunk(
+            b"@@ -0,0 +1,3 @@\n",
+            &[insert.clone(), insert.clone(), insert],
+        );
+        assert_eq!(h.shift_to_mod(0), Some(3));
+        assert_eq!(h.shift_to_mod(5), Some(3));
     }
 
     fn assert_malformed_header(header: &[u8]) {
