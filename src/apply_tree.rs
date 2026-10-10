@@ -13,7 +13,7 @@
 use crate::apply::{apply_fuzzy, ApplyOptions, HunkOutcome};
 use crate::unified::UnifiedPatch;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Options for applying a patch set to files on disk.
 #[derive(Debug, Clone)]
@@ -55,13 +55,15 @@ impl Default for ApplyToTreeOptions {
 }
 
 /// Something went wrong applying a patch set. A failed *hunk* is not an error; it
-/// is recorded in the [`FileReport`]. This is reserved for I/O failures and
-/// patches that name no file to write.
+/// is recorded in the [`FileReport`]. This is reserved for I/O failures,
+/// patches that name no file to write, and patches naming a path that is not a
+/// plain relative path.
 #[derive(Debug)]
 pub enum Error {
     /// An I/O error touching the tree.
     Io(std::io::Error),
-    /// A patch that names `/dev/null` on both sides, so there is nothing to do.
+    /// A patch that cannot be applied as written, because it names `/dev/null`
+    /// on both sides or names a path that is not a plain relative path.
     Malformed(String),
 }
 
@@ -163,6 +165,22 @@ fn strip_path(name: &[u8], strip: u32) -> PathBuf {
     PathBuf::from(name.splitn(strip as usize + 1, '/').last().unwrap_or(name))
 }
 
+/// Reject a patch path that has any component other than an ordinary name or
+/// `.`, so a patch cannot point out of the tree with `..`, a leading slash or a
+/// Windows prefix.
+fn check_contained(name: &Path) -> Result<(), Error> {
+    if name
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(Error::Malformed(format!(
+            "patch path is not a plain relative path: {}",
+            name.display()
+        )));
+    }
+    Ok(())
+}
+
 fn is_dev_null(name: &[u8]) -> bool {
     let name = String::from_utf8_lossy(name);
     name.split('\t').next().unwrap_or(&name) == "/dev/null"
@@ -175,6 +193,10 @@ fn apply_one(
     out: &mut Option<&mut dyn Write>,
 ) -> Result<FileReport, Error> {
     let (orig, modified) = target_of(patch, options.strip);
+
+    for name in [orig.as_deref(), modified.as_deref()].into_iter().flatten() {
+        check_contained(name)?;
+    }
 
     let read_from = orig
         .as_ref()
