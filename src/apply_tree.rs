@@ -426,4 +426,79 @@ mod tests {
         assert!(!report.files[0].backed_up);
         assert!(!dir.path().join("f.orig").exists());
     }
+
+    // Each refusal test reaches the write path, so the escape really happens without the guard.
+    #[test]
+    fn a_patch_naming_a_parent_directory_is_refused() {
+        let patch = b"--- /dev/null\n+++ b/../escaped\n@@ -0,0 +1,1 @@\n+new\n";
+        let dir = tree(&[]);
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let outside = dir.path().join("escaped");
+
+        let err = apply_to_tree(&root, &[parse(patch)], &opts(), None).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Malformed(_)),
+            "expected Malformed, got {err:?}"
+        );
+        assert!(!outside.exists(), "wrote outside the tree: {outside:?}");
+    }
+
+    #[test]
+    fn a_patch_naming_an_absolute_path_is_refused() {
+        let dir = tree(&[]);
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        // Absolute, but inside the TempDir, so the test stays self-contained.
+        let outside = dir.path().join("escaped");
+        let patch = format!(
+            "--- /dev/null\n+++ {}\n@@ -0,0 +1,1 @@\n+new\n",
+            outside.display()
+        );
+        // At the default strip of 0 the leading slash is still there.
+        let options = ApplyToTreeOptions::default();
+
+        let err = apply_to_tree(&root, &[parse(patch.as_bytes())], &options, None).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Malformed(_)),
+            "expected Malformed, got {err:?}"
+        );
+        assert!(!outside.exists(), "wrote outside the tree: {outside:?}");
+    }
+
+    #[test]
+    fn a_destination_that_escapes_is_refused_even_with_a_valid_source() {
+        // Only the `+++` side escapes, so the guard has to check both.
+        let patch = b"--- a/f\n+++ b/../escaped\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let dir = tree(&[]);
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("f"), b"old\n").unwrap();
+        let outside = dir.path().join("escaped");
+
+        let err = apply_to_tree(&root, &[parse(patch)], &opts(), None).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Malformed(_)),
+            "expected Malformed, got {err:?}"
+        );
+        assert!(!outside.exists(), "wrote outside the tree: {outside:?}");
+        assert_eq!(std::fs::read(root.join("f")).unwrap(), b"old\n");
+    }
+
+    #[test]
+    fn a_path_inside_a_subdirectory_still_applies() {
+        // The guard must not reject ordinary nested paths.
+        let patch = b"--- a/sub/f\n+++ b/sub/f\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let dir = tree(&[]);
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/f"), b"old\n").unwrap();
+
+        let report = apply_to_tree(dir.path(), &[parse(patch)], &opts(), None).unwrap();
+
+        assert!(report.is_success());
+        assert_eq!(std::fs::read(dir.path().join("sub/f")).unwrap(), b"new\n");
+    }
 }
