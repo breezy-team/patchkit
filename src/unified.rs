@@ -916,10 +916,16 @@ where
                 // would otherwise underflow these counters. The real
                 // malformed-hunk error is surfaced downstream by
                 // `iter_hunks`; here we just keep grouping lines.
-                if line.starts_with(b"-") || line.starts_with(b" ") {
+                //
+                // A bare `\n` is a blank context line that was emitted with
+                // its leading space stripped (common in handwritten and
+                // quilt-refreshed patches); count it like a space-prefixed
+                // context line in both ranges.
+                let is_blank_context = line.as_slice() == b"\n";
+                if line.starts_with(b"-") || line.starts_with(b" ") || is_blank_context {
                     self.orig_range = self.orig_range.saturating_sub(1);
                 }
-                if line.starts_with(b"+") || line.starts_with(b" ") {
+                if line.starts_with(b"+") || line.starts_with(b" ") || is_blank_context {
                     self.mod_range = self.mod_range.saturating_sub(1);
                 }
                 self.saved_lines.push(line);
@@ -1139,6 +1145,40 @@ mod iter_file_patch_tests {
             "expected a syntax error, got {} Ok result(s)",
             results.iter().filter(|r| r.is_ok()).count(),
         );
+    }
+
+    /// Blank context lines in a hunk body are sometimes emitted as a bare
+    /// `\n` with the leading space stripped (common in handwritten or
+    /// quilt-refreshed patches). `iter_file_patch` must count those in the
+    /// hunk's range: otherwise the next file's `Index:`/`---`/`+++` header
+    /// is swallowed into the previous hunk's body and parsing of the second
+    /// file fails with `Malformed hunk header: Does not match format.`.
+    #[test]
+    fn test_blank_context_line_counts_in_hunk_range() {
+        let lines = [
+            "Index: one\n",
+            "===================================================================\n",
+            "--- a/one\n",
+            "+++ b/one\n",
+            "@@ -1,3 +1,2 @@\n",
+            " ctx1\n",
+            "\n", // blank context line, no leading space
+            "-removed\n",
+            "Index: two\n",
+            "===================================================================\n",
+            "--- a/two\n",
+            "+++ b/two\n",
+            "@@ -1,1 +1,1 @@\n",
+            "-x\n",
+            "+y\n",
+        ];
+        let results: Vec<_> =
+            super::parse_patches(lines.into_iter().map(|l| l.as_bytes().to_vec())).collect();
+        let patches: Vec<_> = results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("blank context line should not break multi-file parsing");
+        assert_eq!(patches.len(), 2);
     }
 }
 
