@@ -13,7 +13,7 @@
 use crate::apply::{apply_fuzzy, ApplyOptions, HunkOutcome};
 use crate::unified::UnifiedPatch;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Options for applying a patch set to files on disk.
 #[derive(Debug, Clone)]
@@ -55,13 +55,15 @@ impl Default for ApplyToTreeOptions {
 }
 
 /// Something went wrong applying a patch set. A failed *hunk* is not an error; it
-/// is recorded in the [`FileReport`]. This is reserved for I/O failures and
-/// patches that name no file to write.
+/// is recorded in the [`FileReport`]. This is reserved for I/O failures,
+/// patches that name no file to write, and patches naming a path that is not a
+/// plain relative path.
 #[derive(Debug)]
 pub enum Error {
     /// An I/O error touching the tree.
     Io(std::io::Error),
-    /// A patch that names `/dev/null` on both sides, so there is nothing to do.
+    /// A patch that cannot be applied as written, because it names `/dev/null`
+    /// on both sides or names a path that is not a plain relative path.
     Malformed(String),
 }
 
@@ -163,6 +165,22 @@ fn strip_path(name: &[u8], strip: u32) -> PathBuf {
     PathBuf::from(name.splitn(strip as usize + 1, '/').last().unwrap_or(name))
 }
 
+/// Reject a patch path that has any component other than an ordinary name or
+/// `.`, so a patch cannot point out of the tree with `..`, a leading slash or a
+/// Windows prefix.
+fn check_contained(name: &Path) -> Result<(), Error> {
+    if name
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(Error::Malformed(format!(
+            "patch path is not a plain relative path: {}",
+            name.display()
+        )));
+    }
+    Ok(())
+}
+
 fn is_dev_null(name: &[u8]) -> bool {
     let name = String::from_utf8_lossy(name);
     name.split('\t').next().unwrap_or(&name) == "/dev/null"
@@ -175,6 +193,10 @@ fn apply_one(
     out: &mut Option<&mut dyn Write>,
 ) -> Result<FileReport, Error> {
     let (orig, modified) = target_of(patch, options.strip);
+
+    for name in [orig.as_deref(), modified.as_deref()].into_iter().flatten() {
+        check_contained(name)?;
+    }
 
     let read_from = orig
         .as_ref()
@@ -403,5 +425,80 @@ mod tests {
         let report = apply_to_tree(dir.path(), &[parse(patch)], &opts, None).unwrap();
         assert!(!report.files[0].backed_up);
         assert!(!dir.path().join("f.orig").exists());
+    }
+
+    // Each refusal test reaches the write path, so the escape really happens without the guard.
+    #[test]
+    fn a_patch_naming_a_parent_directory_is_refused() {
+        let patch = b"--- /dev/null\n+++ b/../escaped\n@@ -0,0 +1,1 @@\n+new\n";
+        let dir = tree(&[]);
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let outside = dir.path().join("escaped");
+
+        let err = apply_to_tree(&root, &[parse(patch)], &opts(), None).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Malformed(_)),
+            "expected Malformed, got {err:?}"
+        );
+        assert!(!outside.exists(), "wrote outside the tree: {outside:?}");
+    }
+
+    #[test]
+    fn a_patch_naming_an_absolute_path_is_refused() {
+        let dir = tree(&[]);
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        // Absolute, but inside the TempDir, so the test stays self-contained.
+        let outside = dir.path().join("escaped");
+        let patch = format!(
+            "--- /dev/null\n+++ {}\n@@ -0,0 +1,1 @@\n+new\n",
+            outside.display()
+        );
+        // At the default strip of 0 the leading slash is still there.
+        let options = ApplyToTreeOptions::default();
+
+        let err = apply_to_tree(&root, &[parse(patch.as_bytes())], &options, None).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Malformed(_)),
+            "expected Malformed, got {err:?}"
+        );
+        assert!(!outside.exists(), "wrote outside the tree: {outside:?}");
+    }
+
+    #[test]
+    fn a_destination_that_escapes_is_refused_even_with_a_valid_source() {
+        // Only the `+++` side escapes, so the guard has to check both.
+        let patch = b"--- a/f\n+++ b/../escaped\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let dir = tree(&[]);
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("f"), b"old\n").unwrap();
+        let outside = dir.path().join("escaped");
+
+        let err = apply_to_tree(&root, &[parse(patch)], &opts(), None).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Malformed(_)),
+            "expected Malformed, got {err:?}"
+        );
+        assert!(!outside.exists(), "wrote outside the tree: {outside:?}");
+        assert_eq!(std::fs::read(root.join("f")).unwrap(), b"old\n");
+    }
+
+    #[test]
+    fn a_path_inside_a_subdirectory_still_applies() {
+        // The guard must not reject ordinary nested paths.
+        let patch = b"--- a/sub/f\n+++ b/sub/f\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let dir = tree(&[]);
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/f"), b"old\n").unwrap();
+
+        let report = apply_to_tree(dir.path(), &[parse(patch)], &opts(), None).unwrap();
+
+        assert!(report.is_success());
+        assert_eq!(std::fs::read(dir.path().join("sub/f")).unwrap(), b"new\n");
     }
 }
